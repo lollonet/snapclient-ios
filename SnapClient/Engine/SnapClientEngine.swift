@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AVFoundation
 
 /// Connection state of the Snapcast client engine.
 enum SnapClientState: Int, Sendable {
@@ -51,9 +52,39 @@ final class SnapClientEngine: ObservableObject {
     @Published private(set) var connectedHost: String?
     @Published private(set) var connectedPort: Int?
 
+    /// Last successfully connected server (persisted).
+    var lastServer: (host: String, port: Int)? {
+        get {
+            guard let host = UserDefaults.standard.string(forKey: "lastServerHost"),
+                  let port = UserDefaults.standard.object(forKey: "lastServerPort") as? Int else {
+                return nil
+            }
+            return (host, port)
+        }
+        set {
+            if let server = newValue {
+                UserDefaults.standard.set(server.host, forKey: "lastServerHost")
+                UserDefaults.standard.set(server.port, forKey: "lastServerPort")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "lastServerHost")
+                UserDefaults.standard.removeObject(forKey: "lastServerPort")
+            }
+        }
+    }
+
+    // MARK: - Configuration
+
+    /// Enable automatic reconnection on disconnection.
+    @Published var autoReconnect: Bool = true
+
+    /// Delay before attempting reconnection (seconds).
+    var reconnectDelay: TimeInterval = 2.0
+
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
+    private var reconnectTask: Task<Void, Never>?
+    private var interruptionObserver: NSObjectProtocol?
 
     // MARK: - Lifecycle
 
@@ -63,13 +94,25 @@ final class SnapClientEngine: ObservableObject {
             fatalError("Failed to create snapclient instance")
         }
         registerCallbacks()
+        setupAudioSessionObservers()
     }
 
     deinit {
+        // Cancel any pending reconnect
+        reconnectTask?.cancel()
+
+        // Remove audio session observer
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+
         // Must be called from any context, so we capture the ref
         let ref = clientRef
         clientRef = nil
         if let ref {
+            // Unregister callbacks before destroying to prevent use-after-free
+            snapclient_set_state_callback(ref, nil, nil)
+            snapclient_set_settings_callback(ref, nil, nil)
             snapclient_destroy(ref)
         }
     }
@@ -90,7 +133,14 @@ final class SnapClientEngine: ObservableObject {
         if success {
             connectedHost = host
             connectedPort = port
+            lastServer = (host, port)
         }
+    }
+
+    /// Connect to the last saved server, if any.
+    func connectToLastServer() {
+        guard let server = lastServer else { return }
+        start(host: server.host, port: server.port)
     }
 
     /// Disconnect from the server.
@@ -163,7 +213,7 @@ final class SnapClientEngine: ObservableObject {
             let newState = SnapClientState(rawValue: Int(rawState.rawValue))
                 ?? .disconnected
             Task { @MainActor in
-                engine.state = newState
+                engine.handleStateChange(newState)
             }
         }, stateCtx)
 
@@ -178,5 +228,67 @@ final class SnapClientEngine: ObservableObject {
                 engine.latencyMs = Int(latency)
             }
         }, stateCtx)
+    }
+
+    private func handleStateChange(_ newState: SnapClientState) {
+        let oldState = state
+        state = newState
+
+        // Auto-reconnect if we were connected and got disconnected unexpectedly
+        if oldState.isActive && newState == .disconnected &&
+           autoReconnect && connectedHost != nil {
+            scheduleReconnect()
+        }
+    }
+
+    private func scheduleReconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(reconnectDelay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.reconnect()
+            }
+        }
+    }
+
+    private func setupAudioSessionObservers() {
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                self?.handleAudioInterruption(notification)
+            }
+        }
+    }
+
+    private func handleAudioInterruption(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        switch type {
+        case .began:
+            // Audio interrupted (phone call, Siri, etc.)
+            // The C++ core should handle this, but we track state
+            break
+        case .ended:
+            // Interruption ended — check if we should resume
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) && connectedHost != nil {
+                    // Re-activate audio session and reconnect
+                    try? AVAudioSession.sharedInstance().setActive(true)
+                    reconnect()
+                }
+            }
+        @unknown default:
+            break
+        }
     }
 }

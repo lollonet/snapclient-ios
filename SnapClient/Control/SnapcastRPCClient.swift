@@ -102,11 +102,6 @@ private struct RPCError: Decodable {
     let message: String
 }
 
-private struct RPCNotification: Decodable {
-    let method: String
-    let params: AnyCodable?
-}
-
 // MARK: - JSON-RPC Client
 
 /// Client for the Snapcast JSON-RPC control API (port 1780).
@@ -280,10 +275,10 @@ final class SnapcastRPCClient: ObservableObject {
 
         let responseData: Data = try await withCheckedThrowingContinuation { cont in
             pendingRequests[id] = cont
-            connection?.send(content: data, completion: .contentProcessed { error in
+            connection?.send(content: data, completion: .contentProcessed { [weak self] error in
                 if let error {
-                    Task { @MainActor in
-                        self.pendingRequests.removeValue(forKey: id)?
+                    Task { @MainActor [weak self] in
+                        self?.pendingRequests.removeValue(forKey: id)?
                             .resume(throwing: error)
                     }
                 }
@@ -349,6 +344,7 @@ final class SnapcastRPCClient: ObservableObject {
 enum AnyCodable: Codable, Sendable {
     case string(String)
     case int(Int)
+    case double(Double)
     case bool(Bool)
     case dict([String: AnyCodable])
     case array([AnyCodable])
@@ -359,6 +355,7 @@ enum AnyCodable: Codable, Sendable {
         switch self {
         case .string(let v): try container.encode(v)
         case .int(let v):    try container.encode(v)
+        case .double(let v): try container.encode(v)
         case .bool(let v):   try container.encode(v)
         case .dict(let v):   try container.encode(v)
         case .array(let v):  try container.encode(v)
@@ -368,9 +365,12 @@ enum AnyCodable: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
+        // Order matters: Bool before Int (JSON booleans could decode as 0/1)
+        // and Int before Double (integers should stay integers)
         if let v = try? container.decode(String.self)            { self = .string(v) }
-        else if let v = try? container.decode(Int.self)          { self = .int(v) }
         else if let v = try? container.decode(Bool.self)         { self = .bool(v) }
+        else if let v = try? container.decode(Int.self)          { self = .int(v) }
+        else if let v = try? container.decode(Double.self)       { self = .double(v) }
         else if let v = try? container.decode([String: AnyCodable].self) { self = .dict(v) }
         else if let v = try? container.decode([AnyCodable].self) { self = .array(v) }
         else { self = .null }

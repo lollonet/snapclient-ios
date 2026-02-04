@@ -29,6 +29,8 @@ struct ContentView: View {
 
 struct PlayerView: View {
     @EnvironmentObject var engine: SnapClientEngine
+    @EnvironmentObject var discovery: ServerDiscovery
+    @EnvironmentObject var rpcClient: SnapcastRPCClient
 
     var body: some View {
         NavigationStack {
@@ -48,6 +50,9 @@ struct PlayerView: View {
             }
             .padding()
             .navigationTitle("SnapForge")
+            .onAppear {
+                discovery.startBrowsing()
+            }
         }
     }
 
@@ -57,6 +62,7 @@ struct PlayerView: View {
                 .font(.system(size: 64))
                 .foregroundStyle(engine.state.isActive ? .green : .secondary)
                 .symbolEffect(.variableColor, isActive: engine.state == .playing)
+                .accessibilityHidden(true)
 
             Text(engine.state.displayName)
                 .font(.headline)
@@ -68,6 +74,8 @@ struct PlayerView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Status: \(engine.state.displayName)\(engine.connectedHost.map { ", connected to \($0)" } ?? "")")
     }
 
     private var volumeSection: some View {
@@ -75,15 +83,20 @@ struct PlayerView: View {
             HStack {
                 Image(systemName: "speaker.fill")
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 Slider(value: volumeBinding, in: 0...100, step: 1)
+                    .accessibilityLabel("Volume")
+                    .accessibilityValue("\(engine.volume) percent")
                 Image(systemName: "speaker.wave.3.fill")
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
 
             HStack {
                 Text("\(engine.volume)%")
                     .font(.caption)
                     .monospacedDigit()
+                    .accessibilityHidden(true)
                 Spacer()
                 Button {
                     engine.isMuted.toggle()
@@ -91,6 +104,7 @@ struct PlayerView: View {
                     Image(systemName: engine.isMuted ? "speaker.slash.fill" : "speaker.fill")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel(engine.isMuted ? "Unmute" : "Mute")
             }
         }
         .padding(.horizontal)
@@ -108,21 +122,29 @@ struct PlayerView: View {
             if engine.state.isActive {
                 Button(role: .destructive) {
                     engine.stop()
+                    rpcClient.disconnect()
                 } label: {
                     Label("Stop", systemImage: "stop.fill")
                         .font(.title2)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityHint("Disconnects from the Snapcast server")
             } else {
-                // Show when disconnected — auto-connect to first discovered server
+                // Connect to first discovered server, or prompt to go to Servers tab
                 Button {
-                    // Will be wired to discovery in ServersView
+                    if let server = discovery.servers.first {
+                        engine.start(host: server.host, port: server.port)
+                        rpcClient.connect(host: server.host, port: 1780)
+                    }
                 } label: {
                     Label("Connect", systemImage: "play.fill")
                         .font(.title2)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(true) // Enable after server selection
+                .disabled(discovery.servers.isEmpty)
+                .accessibilityHint(discovery.servers.isEmpty
+                    ? "No servers found. Go to Servers tab to search or enter manually."
+                    : "Connects to \(discovery.servers.first?.displayName ?? "server")")
             }
         }
     }
@@ -193,6 +215,8 @@ struct GroupSection: View {
 struct ClientRow: View {
     let client: SnapcastClient
     @EnvironmentObject var rpcClient: SnapcastRPCClient
+    @State private var sliderValue: Double = 0
+    @State private var isEditing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -203,28 +227,37 @@ struct ClientRow: View {
                 Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
                     .font(.body)
                 Spacer()
-                Text("\(client.config.volume.percent)%")
+                Text("\(Int(isEditing ? sliderValue : Double(client.config.volume.percent)))%")
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
 
             Slider(
-                value: Binding(
-                    get: { Double(client.config.volume.percent) },
-                    set: { newVal in
-                        Task {
-                            try? await rpcClient.setClientVolume(
-                                clientId: client.id,
-                                volume: ClientVolume(percent: Int(newVal), muted: client.config.volume.muted)
-                            )
-                            await rpcClient.refreshStatus()
-                        }
-                    }
-                ),
+                value: $sliderValue,
                 in: 0...100,
                 step: 1
-            )
+            ) { editing in
+                isEditing = editing
+                if !editing {
+                    // Only send when user finishes dragging
+                    Task {
+                        try? await rpcClient.setClientVolume(
+                            clientId: client.id,
+                            volume: ClientVolume(percent: Int(sliderValue), muted: client.config.volume.muted)
+                        )
+                        await rpcClient.refreshStatus()
+                    }
+                }
+            }
+            .onAppear {
+                sliderValue = Double(client.config.volume.percent)
+            }
+            .onChange(of: client.config.volume.percent) { _, newValue in
+                if !isEditing {
+                    sliderValue = Double(newValue)
+                }
+            }
         }
         .padding(.vertical, 2)
     }

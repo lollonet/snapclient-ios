@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build iOS
+    runs-on: macos-15
+    if: false  # Skip until C++ build scripts are ready
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache Build Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/deps
+            SnapClientCore/vendor/*/lib
+          key: deps-${{ runner.os }}-${{ hashFiles('scripts/build-deps.sh') }}
+          restore-keys: |
+            deps-${{ runner.os }}-
+
+      - name: Build C++ Dependencies
+        run: |
+          if [ ! -f build/deps/snapclient_core/libsnapclient_bridge.a ]; then
+            ./scripts/build-deps.sh
+          fi
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build for Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project SnapClient.xcodeproj \
+            -scheme SnapClient \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | xcbeautify --renderer github-actions || true
+
+  swift-lint:
+    name: Swift Lint
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SwiftLint
+        run: brew install swiftlint
+
+      - name: Run SwiftLint
+        run: swiftlint lint --strict --reporter github-actions-logging SnapClient/
+        continue-on-error: true

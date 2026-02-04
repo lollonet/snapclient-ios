@@ -97,37 +97,58 @@ final class ServerDiscovery: ObservableObject {
             if connections[serviceId] != nil { continue }
 
             // Parse TXT record
-            var txt: [String: String] = [:]
+            var txtDict: [String: String] = [:]
             if case let .bonjour(record) = result.metadata {
                 for key in record.dictionary.keys {
                     if let value = record.dictionary[key] {
-                        txt[key] = value
+                        txtDict[key] = value
                     }
                 }
             }
+            let txt = txtDict  // Capture as immutable for sendable closure
 
             // Resolve the endpoint by creating a temporary connection
             let conn = NWConnection(to: result.endpoint, using: .tcp)
             connections[serviceId] = conn
 
-            conn.stateUpdateHandler = { [weak self] state in
-                guard case .ready = state else { return }
-
-                // Extract resolved host and port
-                if let innerEndpoint = conn.currentPath?.remoteEndpoint,
-                   case let .hostPort(host, port) = innerEndpoint {
-                    let server = DiscoveredServer(
-                        id: serviceId,
-                        name: name,
-                        host: "\(host)",
-                        port: Int(port.rawValue),
-                        txtRecord: txt
-                    )
-                    Task { @MainActor in
-                        self?.addServer(server)
+            conn.stateUpdateHandler = { [weak self, serviceId, name, txt] state in
+                switch state {
+                case .ready:
+                    // Extract resolved host and port
+                    if let innerEndpoint = conn.currentPath?.remoteEndpoint,
+                       case let .hostPort(host, port) = innerEndpoint {
+                        // Extract clean IP/hostname string without interface suffix
+                        let hostString: String
+                        switch host {
+                        case .ipv4(let addr):
+                            hostString = "\(addr)"
+                        case .ipv6(let addr):
+                            hostString = "\(addr)"
+                        case .name(let name, _):
+                            hostString = name
+                        @unknown default:
+                            hostString = "\(host)"
+                        }
+                        let server = DiscoveredServer(
+                            id: serviceId,
+                            name: name,
+                            host: hostString,
+                            port: Int(port.rawValue),
+                            txtRecord: txt
+                        )
+                        Task { @MainActor in
+                            self?.addServer(server)
+                            self?.connections.removeValue(forKey: serviceId)
+                        }
                     }
+                    conn.cancel()
+                case .failed, .cancelled:
+                    Task { @MainActor in
+                        self?.connections.removeValue(forKey: serviceId)
+                    }
+                default:
+                    break
                 }
-                conn.cancel()
             }
 
             conn.start(queue: .global(qos: .userInitiated))
