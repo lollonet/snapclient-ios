@@ -1,0 +1,76 @@
+name: SnapClient
+options:
+  bundleIdPrefix: com.snapforge
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  SWIFT_VERSION: "5.9"
+  CLANG_CXX_LANGUAGE_STANDARD: c++17
+  ENABLE_BITCODE: NO
+
+targets:
+  SnapClient:
+    type: application
+    platform: iOS
+    supportedDestinations: [iOS]
+    sources:
+      - path: SnapClient
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.snapforge.snapclient
+        INFOPLIST_GENERATION_MODE: GeneratedFile
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_OBJC_BRIDGING_HEADER: SnapClient/Engine/Bridge/SnapClientCore-Bridging-Header.h
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/build/deps/snapclient_core
+          - $(PROJECT_DIR)/SnapClientCore/vendor/flac/lib
+          - $(PROJECT_DIR)/SnapClientCore/vendor/opus/lib
+          - $(PROJECT_DIR)/SnapClientCore/vendor/ogg/lib
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/SnapClientCore/bridge
+          - $(PROJECT_DIR)/SnapClientCore/ios_shim
+          - $(PROJECT_DIR)/SnapClientCore/ios_player
+          - $(PROJECT_DIR)/SnapClientCore/vendor/snapcast
+          - $(PROJECT_DIR)/SnapClientCore/vendor/snapcast/client
+          - $(PROJECT_DIR)/SnapClientCore/vendor/snapcast/common
+          - $(PROJECT_DIR)/SnapClientCore/vendor/boost
+          - $(PROJECT_DIR)/SnapClientCore/vendor/flac/include
+          - $(PROJECT_DIR)/SnapClientCore/vendor/opus/include
+          - $(PROJECT_DIR)/SnapClientCore/vendor/ogg/include
+        OTHER_LDFLAGS:
+          - -lsnapclient_bridge
+          - -lsnapclient_core
+          - -lFLAC
+          - -lopus
+          - -logg
+          - -lc++
+          - -framework AudioToolbox
+          - -framework CoreFoundation
+          - -framework Foundation
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+      configs:
+        Debug:
+          DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: -O
+    info:
+      path: SnapClient/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIBackgroundModes:
+          - audio
+        NSLocalNetworkUsageDescription: "SnapClient needs local network access to discover and connect to Snapcast servers."
+        NSBonjourServices:
+          - "_snapcast._tcp"
+        CFBundleDisplayName: SnapForge
+    dependencies: []
+    preBuildScripts: []
