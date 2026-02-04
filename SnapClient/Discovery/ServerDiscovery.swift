@@ -13,6 +13,14 @@ struct DiscoveredServer: Identifiable, Hashable {
     var displayName: String {
         txtRecord["name"] ?? name
     }
+
+    /// Control API port (JSON-RPC). Defaults to audio port + 76 (1704 -> 1780).
+    var controlPort: Int {
+        if let portStr = txtRecord["control_port"], let port = Int(portStr) {
+            return port
+        }
+        return port + 76
+    }
 }
 
 /// Discovers Snapcast servers on the local network using mDNS (Bonjour).
