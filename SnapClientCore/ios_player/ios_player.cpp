@@ -109,20 +109,23 @@ void IOSPlayer::worker()
         {
             try
             {
-                initAudioQueue();
+                if (!initAudioQueue())
+                {
+                    LOG(WARNING, LOG_TAG) << "Audio queue init failed, retrying...\n";
+                }
             }
             catch (const std::exception& e)
             {
                 LOG(ERROR, LOG_TAG) << "Exception in worker: " << e.what() << "\n";
-                chronos::sleep(100);
             }
+            chronos::sleep(100);
         }
         chronos::sleep(100);
     }
 }
 
 
-void IOSPlayer::initAudioQueue()
+bool IOSPlayer::initAudioQueue()
 {
     const SampleFormat& sampleFormat = pubStream_->getFormat();
 
@@ -142,10 +145,15 @@ void IOSPlayer::initAudioQueue()
     if (status != noErr)
     {
         LOG(ERROR, LOG_TAG) << "AudioQueueNewOutput failed: " << status << "\n";
-        return;
+        return false;
     }
 
-    AudioQueueCreateTimeline(queue, &timeLine_);
+    status = AudioQueueCreateTimeline(queue, &timeLine_);
+    if (status != noErr)
+    {
+        LOG(WARNING, LOG_TAG) << "AudioQueueCreateTimeline failed: " << status << " (non-fatal)\n";
+        // Non-fatal, continue without timeline
+    }
 
     // Calculate buffer size for ~100ms
     frames_ = (sampleFormat.rate() * ms_) / 1000;
@@ -162,9 +170,17 @@ void IOSPlayer::initAudioQueue()
     }
 
     LOG(DEBUG, LOG_TAG) << "IOSPlayer::initAudioQueue starting\n";
-    AudioQueueCreateTimeline(queue, &timeLine_);
-    AudioQueueStart(queue, NULL);
+    // Note: AudioQueueCreateTimeline already called above - don't duplicate
+    status = AudioQueueStart(queue, NULL);
+    if (status != noErr)
+    {
+        LOG(ERROR, LOG_TAG) << "AudioQueueStart failed: " << status << "\n";
+        AudioQueueDispose(queue, true);
+        return false;
+    }
+
     CFRunLoopRun();
+    return true;
 }
 
 

@@ -51,7 +51,7 @@ protected:
     bool needsThread() const override;
 
 private:
-    void initAudioQueue();
+    bool initAudioQueue();
     void uninitAudioQueue(AudioQueueRef queue);
 
     size_t ms_;
