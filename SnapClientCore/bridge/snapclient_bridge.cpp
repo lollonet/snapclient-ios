@@ -132,14 +132,23 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
             } catch (const std::exception& e) {
                 LOG(ERROR, "Bridge") << "io_context exception: " << e.what() << "\n";
             }
-            notify_state(client, SNAPCLIENT_STATE_DISCONNECTED);
+            // Only notify disconnected if we were previously connected
+            // (avoids race with main thread's notify_state calls)
+            if (client->state.load() != SNAPCLIENT_STATE_DISCONNECTED) {
+                notify_state(client, SNAPCLIENT_STATE_DISCONNECTED);
+            }
         });
 
+        // Mark as connected (Controller will update to PLAYING when stream starts)
         notify_state(client, SNAPCLIENT_STATE_CONNECTED);
         return true;
 
     } catch (const std::exception& e) {
         LOG(ERROR, "Bridge") << "Failed to start: " << e.what() << "\n";
+        // Cleanup on failure
+        client->controller.reset();
+        client->work_guard.reset();
+        client->io_context.reset();
         notify_state(client, SNAPCLIENT_STATE_DISCONNECTED);
         return false;
     }

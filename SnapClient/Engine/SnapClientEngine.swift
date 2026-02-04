@@ -77,14 +77,16 @@ final class SnapClientEngine: ObservableObject {
     /// Enable automatic reconnection on disconnection.
     @Published var autoReconnect: Bool = true
 
-    /// Delay before attempting reconnection (seconds).
-    var reconnectDelay: TimeInterval = 2.0
-
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
     private var reconnectTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
+
+    // Exponential backoff for reconnection
+    private var reconnectAttempts: Int = 0
+    private let maxReconnectDelay: TimeInterval = 60.0
+    private let baseReconnectDelay: TimeInterval = 2.0
 
     // MARK: - Lifecycle
 
@@ -234,6 +236,11 @@ final class SnapClientEngine: ObservableObject {
         let oldState = state
         state = newState
 
+        // Reset reconnect attempts on successful connection
+        if newState == .connected || newState == .playing {
+            reconnectAttempts = 0
+        }
+
         // Auto-reconnect if we were connected and got disconnected unexpectedly
         if oldState.isActive && newState == .disconnected &&
            autoReconnect && connectedHost != nil {
@@ -243,9 +250,14 @@ final class SnapClientEngine: ObservableObject {
 
     private func scheduleReconnect() {
         reconnectTask?.cancel()
+
+        // Exponential backoff: 2, 4, 8, 16, 32, 60 (capped)
+        let delay = min(baseReconnectDelay * pow(2.0, Double(reconnectAttempts)), maxReconnectDelay)
+        reconnectAttempts += 1
+
         reconnectTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(for: .seconds(reconnectDelay))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.reconnect()
@@ -254,6 +266,12 @@ final class SnapClientEngine: ObservableObject {
     }
 
     private func setupAudioSessionObservers() {
+        // Remove existing observer if any (prevents duplicates)
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            interruptionObserver = nil
+        }
+
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
