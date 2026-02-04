@@ -14,7 +14,6 @@ jobs:
   build:
     name: Build iOS
     runs-on: macos-15
-    if: false  # Skip until C++ build scripts are ready
 
     steps:
       - name: Checkout
@@ -55,7 +54,7 @@ jobs:
           xcodebuild build \
             -project SnapClient.xcodeproj \
             -scheme SnapClient \
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | xcbeautify --renderer github-actions || true
