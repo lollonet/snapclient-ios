@@ -134,7 +134,7 @@ struct PlayerView: View {
                 Button {
                     if let server = discovery.servers.first {
                         engine.start(host: server.host, port: server.port)
-                        rpcClient.connect(host: server.host, port: 1780)
+                        rpcClient.connect(host: server.host, port: server.controlPort)
                     }
                 } label: {
                     Label("Connect", systemImage: "play.fill")
@@ -365,7 +365,7 @@ struct ServersView: View {
 
     private func connectTo(host: String, port: Int) {
         engine.start(host: host, port: port)
-        // Also connect the RPC client for control
-        rpcClient.connect(host: host, port: 1780)
+        // RPC control port is audio port + 76 (standard: 1704 -> 1780)
+        rpcClient.connect(host: host, port: port + 76)
     }
 }
