@@ -217,20 +217,18 @@ build_snapclient_core() {
     mkdir -p "$build"
 
     cmake -B "$build" -S "$ROOT_DIR/SnapClientCore" \
-        -G Xcode \
-        -DCMAKE_SYSTEM_NAME=iOS \
-        -DCMAKE_OSX_ARCHITECTURES=arm64 \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+        -DCMAKE_TOOLCHAIN_FILE="$ROOT_DIR/SnapClientCore/cmake/ios.toolchain.cmake" \
+        -DCMAKE_BUILD_TYPE=Release \
         -DSNAPCAST_DIR="$VENDOR_DIR/snapcast" \
         -DBOOST_ROOT="$VENDOR_DIR/boost" \
         -DFLAC_ROOT="$VENDOR_DIR/flac" \
         -DOPUS_ROOT="$VENDOR_DIR/opus" \
         -DOGG_ROOT="$VENDOR_DIR/ogg"
 
-    cmake --build "$build" --config Release
+    cmake --build "$build" --parallel
 
     info "snapclient core built."
-    info "Libraries at: $build/Release-iphoneos/"
+    info "Libraries at: $build/"
 }
 
 # ── Run ──────────────────────────────────────────────────────────────
