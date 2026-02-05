@@ -129,13 +129,18 @@ final class ServerDiscovery: ObservableObject {
                         let hostString: String
                         switch host {
                         case .ipv4(let addr):
-                            hostString = "\(addr)"
+                            // Use debugDescription to get clean IP without interface
+                            hostString = addr.debugDescription
+                            print("[Discovery] IPv4 raw: \(addr), debugDesc: \(addr.debugDescription), bytes: \(Array(addr.debugDescription.utf8))")
                         case .ipv6(let addr):
-                            hostString = "\(addr)"
+                            hostString = addr.debugDescription
+                            print("[Discovery] IPv6 raw: \(addr), debugDesc: \(addr.debugDescription)")
                         case .name(let name, _):
                             hostString = name
+                            print("[Discovery] Name: \(name)")
                         @unknown default:
                             hostString = "\(host)"
+                            print("[Discovery] Unknown host type: \(host)")
                         }
                         let server = DiscoveredServer(
                             id: serviceId,

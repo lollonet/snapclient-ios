@@ -147,7 +147,9 @@ final class SnapClientEngine: ObservableObject {
             return
         }
 
-        log.info("[\(self.instanceId)] start(\(host):\(port)) state=\(self.state.displayName)")
+        // Debug: log raw bytes of host string
+        let hostBytes = Array(host.utf8)
+        log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
         configureAudioSession()
 
         let success = host.withCString { cHost in
