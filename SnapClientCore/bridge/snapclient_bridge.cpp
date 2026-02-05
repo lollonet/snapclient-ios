@@ -104,34 +104,46 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 
     client->host = host;
     client->port = port;
+    LOG(INFO, "Bridge") << "Starting: host=" << host << ", port=" << port << "\n";
     notify_state(client, SNAPCLIENT_STATE_CONNECTING);
 
     try {
         // Create io_context
         client->io_context = std::make_unique<boost::asio::io_context>();
         client->work_guard = std::make_unique<work_guard_t>(client->io_context->get_executor());
+        LOG(INFO, "Bridge") << "io_context created\n";
 
         // Configure ClientSettings
         ClientSettings settings;
-        settings.server.uri = StreamUri("tcp://" + client->host + ":" + std::to_string(client->port));
-        settings.player.player_name = "ios";  // Use our iOS player
+        std::string uri_str = "tcp://" + client->host + ":" + std::to_string(client->port);
+        settings.server.uri = StreamUri(uri_str);
+        settings.player.player_name = "coreaudio";
         settings.player.latency = client->latency_ms.load();
         settings.instance = client->instance;
         settings.host_id = client->name;
+        LOG(INFO, "Bridge") << "Settings: uri=" << uri_str
+                            << ", player=" << settings.player.player_name
+                            << ", host_id=" << settings.host_id
+                            << ", instance=" << settings.instance << "\n";
 
         // Create Controller
         client->controller = std::make_unique<Controller>(*client->io_context, settings);
+        LOG(INFO, "Bridge") << "Controller created\n";
 
-        // Start Controller (it will connect and set up everything)
+        // Start Controller — this does synchronous TCP connect + queues
+        // async hello/read operations on the io_context
         client->controller->start();
+        LOG(INFO, "Bridge") << "Controller started (TCP connected, hello queued)\n";
 
         // Run io_context in background thread
         client->io_thread = std::thread([client]() {
+            LOG(INFO, "Bridge") << "io_context thread started\n";
             try {
                 client->io_context->run();
             } catch (const std::exception& e) {
                 LOG(ERROR, "Bridge") << "io_context exception: " << e.what() << "\n";
             }
+            LOG(INFO, "Bridge") << "io_context thread exiting\n";
             // Only notify disconnected if we were previously connected
             // (avoids race with main thread's notify_state calls)
             if (client->state.load() != SNAPCLIENT_STATE_DISCONNECTED) {
@@ -141,6 +153,7 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 
         // Mark as connected (Controller will update to PLAYING when stream starts)
         notify_state(client, SNAPCLIENT_STATE_CONNECTED);
+        LOG(INFO, "Bridge") << "Connected, io_context running in background\n";
         return true;
 
     } catch (const std::exception& e) {
