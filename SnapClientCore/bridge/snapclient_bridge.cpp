@@ -19,10 +19,66 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <cstdarg>
+#include <cstdio>
 
 // Boost.Asio
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/executor_work_guard.hpp>
+
+// iOS: use os_log directly (AixLog SinkNative falls back to syslog on iOS)
+#ifdef IOS
+#include <os/log.h>
+static os_log_t bridge_log() {
+    static os_log_t log = os_log_create("com.snapforge.snapclient", "Bridge");
+    return log;
+}
+#endif
+
+/* ── Log callback ──────────────────────────────────────────────── */
+
+static SnapClientLogCallback g_log_cb = nullptr;
+static void* g_log_ctx = nullptr;
+static std::mutex g_log_mutex;
+
+void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_cb = callback;
+    g_log_ctx = ctx;
+}
+
+/// Log to os_log + callback. Use this instead of LOG() in bridge code.
+static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+#ifdef IOS
+    os_log_type_t type = OS_LOG_TYPE_DEFAULT;
+    switch (level) {
+        case SNAPCLIENT_LOG_DEBUG:   type = OS_LOG_TYPE_DEBUG; break;
+        case SNAPCLIENT_LOG_INFO:    type = OS_LOG_TYPE_INFO; break;
+        case SNAPCLIENT_LOG_WARNING: type = OS_LOG_TYPE_DEFAULT; break;
+        case SNAPCLIENT_LOG_ERROR:   type = OS_LOG_TYPE_ERROR; break;
+    }
+    os_log_with_type(bridge_log(), type, "%{public}s", buf);
+#endif
+
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if (g_log_cb) {
+        g_log_cb(g_log_ctx, level, buf);
+    }
+}
+
+#define BLOG_DEBUG(...)   bridge_log_msg(SNAPCLIENT_LOG_DEBUG, __VA_ARGS__)
+#define BLOG_INFO(...)    bridge_log_msg(SNAPCLIENT_LOG_INFO, __VA_ARGS__)
+#define BLOG_WARN(...)    bridge_log_msg(SNAPCLIENT_LOG_WARNING, __VA_ARGS__)
+#define BLOG_ERROR(...)   bridge_log_msg(SNAPCLIENT_LOG_ERROR, __VA_ARGS__)
 
 /* ── Internal state ─────────────────────────────────────────────── */
 
@@ -75,13 +131,14 @@ static void notify_state(SnapClient* c, SnapClientState new_state) {
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
 SnapClientRef snapclient_create(void) {
-    // Initialize logging (once)
+    // Initialize AixLog for Snapcast internals (uses syslog on iOS)
     static bool logging_initialized = false;
     if (!logging_initialized) {
-        AixLog::Log::init<AixLog::SinkNative>("snapclient", AixLog::Filter(AixLog::Severity::info));
+        AixLog::Log::init<AixLog::SinkNative>("snapclient", AixLog::Filter(AixLog::Severity::debug));
         logging_initialized = true;
     }
 
+    BLOG_INFO("snapclient_create: allocating client");
     return new (std::nothrow) SnapClient();
 }
 
@@ -104,14 +161,14 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 
     client->host = host;
     client->port = port;
-    LOG(INFO, "Bridge") << "Starting: host=" << host << ", port=" << port << "\n";
+    BLOG_INFO("start: host=%s, port=%d", host, port);
     notify_state(client, SNAPCLIENT_STATE_CONNECTING);
 
     try {
         // Create io_context
         client->io_context = std::make_unique<boost::asio::io_context>();
         client->work_guard = std::make_unique<work_guard_t>(client->io_context->get_executor());
-        LOG(INFO, "Bridge") << "io_context created\n";
+        BLOG_INFO("io_context created");
 
         // Configure ClientSettings
         ClientSettings settings;
@@ -121,29 +178,31 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
         settings.player.latency = client->latency_ms.load();
         settings.instance = client->instance;
         settings.host_id = client->name;
-        LOG(INFO, "Bridge") << "Settings: uri=" << uri_str
-                            << ", player=" << settings.player.player_name
-                            << ", host_id=" << settings.host_id
-                            << ", instance=" << settings.instance << "\n";
+        BLOG_INFO("settings: uri=%s, player=%s, host_id=%s, instance=%d",
+                  uri_str.c_str(), settings.player.player_name.c_str(),
+                  settings.host_id.c_str(), static_cast<int>(settings.instance));
 
         // Create Controller
         client->controller = std::make_unique<Controller>(*client->io_context, settings);
-        LOG(INFO, "Bridge") << "Controller created\n";
+        BLOG_INFO("Controller created");
 
-        // Start Controller — this does synchronous TCP connect + queues
-        // async hello/read operations on the io_context
+        // Start Controller — synchronous TCP connect + queues async hello/read
+        BLOG_INFO("calling controller->start()...");
         client->controller->start();
-        LOG(INFO, "Bridge") << "Controller started (TCP connected, hello queued)\n";
+        BLOG_INFO("controller->start() returned (TCP connected, async ops queued)");
 
         // Run io_context in background thread
         client->io_thread = std::thread([client]() {
-            LOG(INFO, "Bridge") << "io_context thread started\n";
+            BLOG_INFO("io_context thread started");
             try {
-                client->io_context->run();
+                auto n = client->io_context->run();
+                BLOG_INFO("io_context.run() returned, handlers executed: %lu",
+                          static_cast<unsigned long>(n));
             } catch (const std::exception& e) {
-                LOG(ERROR, "Bridge") << "io_context exception: " << e.what() << "\n";
+                BLOG_ERROR("io_context exception: %s", e.what());
             }
-            LOG(INFO, "Bridge") << "io_context thread exiting\n";
+            BLOG_INFO("io_context thread exiting (state=%d)",
+                      static_cast<int>(client->state.load()));
             // Only notify disconnected if we were previously connected
             // (avoids race with main thread's notify_state calls)
             if (client->state.load() != SNAPCLIENT_STATE_DISCONNECTED) {
@@ -153,11 +212,11 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 
         // Mark as connected (Controller will update to PLAYING when stream starts)
         notify_state(client, SNAPCLIENT_STATE_CONNECTED);
-        LOG(INFO, "Bridge") << "Connected, io_context running in background\n";
+        BLOG_INFO("connected, io_context running in background");
         return true;
 
     } catch (const std::exception& e) {
-        LOG(ERROR, "Bridge") << "Failed to start: " << e.what() << "\n";
+        BLOG_ERROR("failed to start: %s", e.what());
         // Cleanup on failure
         client->controller.reset();
         client->work_guard.reset();
@@ -279,42 +338,11 @@ void snapclient_set_settings_callback(SnapClientRef client,
 
 /* ── Audio session ──────────────────────────────────────────────── */
 
-#ifdef __OBJC__
-#import <AVFAudio/AVFAudio.h>
-#endif
-
 bool snapclient_configure_audio_session(void) {
-#ifdef __OBJC__
-    @autoreleasepool {
-        NSError* error = nil;
-        AVAudioSession* session = [AVAudioSession sharedInstance];
-
-        // Set category for playback
-        [session setCategory:AVAudioSessionCategoryPlayback
-                        mode:AVAudioSessionModeDefault
-                     options:AVAudioSessionCategoryOptionMixWithOthers
-                       error:&error];
-        if (error) {
-            LOG(ERROR, "Bridge") << "Failed to set audio category: "
-                                 << [[error localizedDescription] UTF8String] << "\n";
-            return false;
-        }
-
-        // Activate session
-        [session setActive:YES error:&error];
-        if (error) {
-            LOG(ERROR, "Bridge") << "Failed to activate audio session: "
-                                 << [[error localizedDescription] UTF8String] << "\n";
-            return false;
-        }
-
-        LOG(INFO, "Bridge") << "Audio session configured for playback\n";
-        return true;
-    }
-#else
-    // Non-Objective-C build - audio session must be configured from Swift
+    // Audio session must be configured from Swift on iOS
+    // (this file is compiled as C++, not Objective-C++)
+    BLOG_INFO("configure_audio_session: delegating to Swift");
     return true;
-#endif
 }
 
 /* ── Version ────────────────────────────────────────────────────── */

@@ -114,6 +114,26 @@ void snapclient_set_settings_callback(SnapClientRef client,
                                       SnapClientSettingsCallback callback,
                                       void* ctx);
 
+/* ── Logging ────────────────────────────────────────────────────── */
+
+/// Log severity levels.
+typedef enum {
+    SNAPCLIENT_LOG_DEBUG   = 0,
+    SNAPCLIENT_LOG_INFO    = 1,
+    SNAPCLIENT_LOG_WARNING = 2,
+    SNAPCLIENT_LOG_ERROR   = 3,
+} SnapClientLogLevel;
+
+/// Callback invoked for each log message from the C++ core.
+/// @param ctx    User-provided context pointer.
+/// @param level  Log severity.
+/// @param msg    Null-terminated log message (UTF-8).
+typedef void (*SnapClientLogCallback)(void* ctx, SnapClientLogLevel level, const char* msg);
+
+/// Register a log callback to receive all bridge log messages.
+/// Pass NULL to unregister. Logs are also sent to os_log.
+void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx);
+
 /* ── Audio session (iOS-specific) ───────────────────────────────── */
 
 /// Configure the iOS audio session for background playback.
