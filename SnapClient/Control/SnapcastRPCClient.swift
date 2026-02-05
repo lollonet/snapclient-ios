@@ -1,5 +1,4 @@
 import Foundation
-import Network
 
 // MARK: - Data Models
 
@@ -102,12 +101,12 @@ private struct RPCError: Decodable {
     let message: String
 }
 
-// MARK: - JSON-RPC Client
+// MARK: - JSON-RPC Client (WebSocket)
 
-/// Client for the Snapcast JSON-RPC control API (port 1780).
+/// Client for the Snapcast JSON-RPC control API.
 ///
-/// Supports both TCP and WebSocket transports.
-/// Receives server notifications for real-time state updates.
+/// Uses WebSocket transport (ws://host:port/jsonrpc) as required
+/// by Snapcast's control server.
 @MainActor
 final class SnapcastRPCClient: ObservableObject {
 
@@ -118,46 +117,42 @@ final class SnapcastRPCClient: ObservableObject {
 
     // MARK: - Private
 
-    private var connection: NWConnection?
+    private var webSocket: URLSessionWebSocketTask?
+    private var session: URLSession?
     private var requestId = 0
     private var pendingRequests: [Int: CheckedContinuation<Data, Error>] = [:]
-    private var receiveBuffer = Data()
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private var receiveTask: Task<Void, Never>?
 
     // MARK: - Connection
 
-    /// Connect to the Snapserver JSON-RPC API.
+    /// Connect to the Snapserver JSON-RPC API via WebSocket.
     func connect(host: String, port: Int = 1780) {
         disconnect()
 
-        let nwHost = NWEndpoint.Host(host)
-        let nwPort = NWEndpoint.Port(integerLiteral: UInt16(port))
+        guard let url = URL(string: "ws://\(host):\(port)/jsonrpc") else { return }
 
-        connection = NWConnection(host: nwHost, port: nwPort, using: .tcp)
+        session = URLSession(configuration: .default)
+        webSocket = session?.webSocketTask(with: url)
+        webSocket?.resume()
 
-        connection?.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .ready:
-                    self?.isConnected = true
-                    self?.startReceiving()
-                    await self?.refreshStatus()
-                case .failed, .cancelled:
-                    self?.isConnected = false
-                default:
-                    break
-                }
-            }
+        isConnected = true
+        startReceiving()
+
+        Task {
+            await refreshStatus()
         }
-
-        connection?.start(queue: .global(qos: .userInitiated))
     }
 
     /// Disconnect from the server.
     func disconnect() {
-        connection?.cancel()
-        connection = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        webSocket?.cancel(with: .normalClosure, reason: nil)
+        webSocket = nil
+        session?.invalidateAndCancel()
+        session = nil
         isConnected = false
         serverStatus = nil
         pendingRequests.values.forEach {
@@ -266,23 +261,32 @@ final class SnapcastRPCClient: ObservableObject {
         method: String,
         params: [String: AnyCodable]?
     ) async throws -> T {
+        guard let webSocket else {
+            throw NSError(domain: "SnapcastRPC", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Not connected"])
+        }
+
         requestId += 1
         let id = requestId
 
         let request = RPCRequest(id: id, method: method, params: params)
-        var data = try encoder.encode(request)
-        data.append(0x0A) // newline delimiter
+        let data = try encoder.encode(request)
+
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: "SnapcastRPC", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Encoding failed"])
+        }
 
         let responseData: Data = try await withCheckedThrowingContinuation { cont in
             pendingRequests[id] = cont
-            connection?.send(content: data, completion: .contentProcessed { [weak self] error in
+            webSocket.send(.string(text)) { [weak self] error in
                 if let error {
                     Task { @MainActor [weak self] in
                         self?.pendingRequests.removeValue(forKey: id)?
                             .resume(throwing: error)
                     }
                 }
-            })
+            }
         }
 
         let response = try decoder.decode(RPCResponse<T>.self, from: responseData)
@@ -298,41 +302,46 @@ final class SnapcastRPCClient: ObservableObject {
     }
 
     private func startReceiving() {
-        connection?.receive(minimumIncompleteLength: 1,
-                           maximumLength: 65536) { [weak self] data, _, _, error in
-            if let data {
-                Task { @MainActor in
-                    self?.handleReceivedData(data)
-                }
-            }
-            if error == nil {
-                Task { @MainActor in
-                    self?.startReceiving()
+        receiveTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do {
+                    guard let webSocket = await MainActor.run(body: { self.webSocket }) else { break }
+                    let message = try await webSocket.receive()
+                    await MainActor.run {
+                        self.handleMessage(message)
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.isConnected = false
+                    }
+                    break
                 }
             }
         }
     }
 
-    private func handleReceivedData(_ data: Data) {
-        receiveBuffer.append(data)
+    private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
+        let data: Data
+        switch message {
+        case .string(let text):
+            guard let d = text.data(using: .utf8) else { return }
+            data = d
+        case .data(let d):
+            data = d
+        @unknown default:
+            return
+        }
 
-        // Split on newlines (JSON-RPC over TCP uses newline-delimited JSON)
-        while let newlineIndex = receiveBuffer.firstIndex(of: 0x0A) {
-            let messageData = receiveBuffer[receiveBuffer.startIndex..<newlineIndex]
-            receiveBuffer = Data(receiveBuffer[receiveBuffer.index(after: newlineIndex)...])
-
-            guard !messageData.isEmpty else { continue }
-
-            // Try to match to a pending request
-            if let json = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
-               let id = json["id"] as? Int,
-               let cont = pendingRequests.removeValue(forKey: id) {
-                cont.resume(returning: Data(messageData))
-            } else {
-                // It's a notification — refresh status
-                Task {
-                    await refreshStatus()
-                }
+        // Try to match to a pending request
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let id = json["id"] as? Int,
+           let cont = pendingRequests.removeValue(forKey: id) {
+            cont.resume(returning: data)
+        } else {
+            // Server notification — refresh status
+            Task {
+                await refreshStatus()
             }
         }
     }
@@ -365,8 +374,6 @@ enum AnyCodable: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        // Order matters: Bool before Int (JSON booleans could decode as 0/1)
-        // and Int before Double (integers should stay integers)
         if let v = try? container.decode(String.self)            { self = .string(v) }
         else if let v = try? container.decode(Bool.self)         { self = .bool(v) }
         else if let v = try? container.decode(Int.self)          { self = .int(v) }
