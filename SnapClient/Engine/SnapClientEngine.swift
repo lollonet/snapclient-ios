@@ -103,7 +103,8 @@ final class SnapClientEngine: ObservableObject {
     // MARK: - Lifecycle
 
     init() {
-        log.info("SnapClientEngine[\(instanceId)] init")
+        let id = instanceId  // capture before self is fully initialized
+        log.info("SnapClientEngine[\(id)] init")
         clientRef = snapclient_create()
         guard clientRef != nil else {
             fatalError("Failed to create snapclient instance")
@@ -111,7 +112,7 @@ final class SnapClientEngine: ObservableObject {
         registerCallbacks()
         registerLogCallback()
         setupAudioSessionObservers()
-        log.info("SnapClientEngine ready, core version: \(snapclient_version().map(String.init(cString:)) ?? "?")")
+        log.info("SnapClientEngine[\(id)] ready, core version: \(snapclient_version().map(String.init(cString:)) ?? "?")")
     }
 
     deinit {
@@ -142,17 +143,17 @@ final class SnapClientEngine: ObservableObject {
     /// Connect to a Snapserver and start audio playback.
     func start(host: String, port: Int = 1704) {
         guard let ref = clientRef else {
-            log.error("[\(instanceId)] start: clientRef is nil!")
+            log.error("[\(self.instanceId)] start: clientRef is nil!")
             return
         }
 
-        log.info("[\(instanceId)] start(\(host):\(port)) state=\(state.displayName)")
+        log.info("[\(self.instanceId)] start(\(host):\(port)) state=\(self.state.displayName)")
         configureAudioSession()
 
         let success = host.withCString { cHost in
             snapclient_start(ref, cHost, Int32(port))
         }
-        log.info("[\(instanceId)] snapclient_start returned \(success)")
+        log.info("[\(self.instanceId)] snapclient_start returned \(success)")
 
         if success {
             connectedHost = host
