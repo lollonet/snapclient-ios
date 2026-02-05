@@ -97,10 +97,13 @@ final class SnapClientEngine: ObservableObject {
     // Keep a max number of log lines
     private let maxLogLines = 200
 
+    // Unique instance ID for debugging
+    private let instanceId = UUID().uuidString.prefix(8)
+
     // MARK: - Lifecycle
 
     init() {
-        log.info("SnapClientEngine init")
+        log.info("SnapClientEngine[\(instanceId)] init")
         clientRef = snapclient_create()
         guard clientRef != nil else {
             fatalError("Failed to create snapclient instance")
@@ -138,16 +141,18 @@ final class SnapClientEngine: ObservableObject {
 
     /// Connect to a Snapserver and start audio playback.
     func start(host: String, port: Int = 1704) {
-        guard let ref = clientRef else { return }
+        guard let ref = clientRef else {
+            log.error("[\(instanceId)] start: clientRef is nil!")
+            return
+        }
 
-        log.info("start: configuring audio session")
+        log.info("[\(instanceId)] start(\(host):\(port)) state=\(state.displayName)")
         configureAudioSession()
 
-        log.info("start: calling snapclient_start(\(host), \(port))")
         let success = host.withCString { cHost in
             snapclient_start(ref, cHost, Int32(port))
         }
-        log.info("start: snapclient_start returned \(success)")
+        log.info("[\(instanceId)] snapclient_start returned \(success)")
 
         if success {
             connectedHost = host

@@ -355,6 +355,29 @@ struct ServersView: View {
                     LabeledContent("Protocol Version", value: "\(engine.protocolVersion)")
                     LabeledContent("State", value: engine.state.displayName)
                 }
+
+                // Debug
+                Section("Debug") {
+                    Button("Test Raw TCP") {
+                        let host = manualHost.isEmpty ? (discovery.servers.first?.host ?? "") : manualHost
+                        guard !host.isEmpty else { return }
+                        let port = Int(manualPort) ?? 1704
+                        let result = engine.testTCP(host: host, port: port)
+                        print("TCP test result: \(result)")
+                    }
+                    .disabled(manualHost.isEmpty && discovery.servers.isEmpty)
+
+                    Button("Clear Last Server") {
+                        engine.lastServer = nil
+                        print("Cleared lastServer")
+                    }
+
+                    if !engine.bridgeLogs.isEmpty {
+                        NavigationLink("View Bridge Logs (\(engine.bridgeLogs.count))") {
+                            BridgeLogsView(logs: engine.bridgeLogs)
+                        }
+                    }
+                }
             }
             .navigationTitle("Servers")
             .onAppear {
@@ -367,5 +390,29 @@ struct ServersView: View {
         engine.start(host: host, port: port)
         // RPC control port is audio port + 76 (standard: 1704 -> 1780)
         rpcClient.connect(host: host, port: port + 76)
+    }
+}
+
+// MARK: - Bridge Logs View
+
+struct BridgeLogsView: View {
+    let logs: [String]
+
+    var body: some View {
+        List {
+            ForEach(Array(logs.enumerated()), id: \.offset) { _, log in
+                Text(log)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(logColor(for: log))
+            }
+        }
+        .navigationTitle("Bridge Logs")
+    }
+
+    private func logColor(for log: String) -> Color {
+        if log.hasPrefix("[E]") { return .red }
+        if log.hasPrefix("[W]") { return .orange }
+        if log.hasPrefix("[D]") { return .secondary }
+        return .primary
     }
 }
