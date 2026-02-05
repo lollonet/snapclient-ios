@@ -40,8 +40,14 @@ fi
 CC_IOS="$(xcrun --sdk iphoneos --find clang)"
 CXX_IOS="$(xcrun --sdk iphoneos --find clang++)"
 
-IOS_CFLAGS="-arch $IOS_ARCH -isysroot $IOS_SDK -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET -fembed-bitcode"
+IOS_CFLAGS="-arch $IOS_ARCH -isysroot $IOS_SDK -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET"
 IOS_LDFLAGS="-arch $IOS_ARCH -isysroot $IOS_SDK -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET"
+
+# On Apple Silicon, --host=aarch64-apple-darwin matches the build machine,
+# so autotools won't cross-compile and tries to run iOS binaries (which hang).
+# Force cross-compilation by making --build differ from --host.
+IOS_HOST="aarch64-apple-darwin"
+IOS_BUILD="x86_64-apple-darwin"
 
 # ── Helpers ─────────────────────────────────────────────────────────
 info()  { echo "==> $*"; }
@@ -104,8 +110,10 @@ build_ogg() {
     [ -d "$src" ] || tar -xJf "$archive" -C "$BUILD_DIR"
 
     cd "$src"
+    make distclean 2>/dev/null || true
     ./configure \
-        --host=aarch64-apple-darwin \
+        --host="$IOS_HOST" \
+        --build="$IOS_BUILD" \
         --prefix="$dest" \
         --enable-static \
         --disable-shared \
@@ -113,7 +121,7 @@ build_ogg() {
         CFLAGS="$IOS_CFLAGS" \
         LDFLAGS="$IOS_LDFLAGS"
 
-    make -j"$(sysctl -n hw.ncpu)" clean install
+    make -j"$(sysctl -n hw.ncpu)" install
     cd "$ROOT_DIR"
 
     info "libogg built."
@@ -136,8 +144,10 @@ build_flac() {
     [ -d "$src" ] || tar -xJf "$archive" -C "$BUILD_DIR"
 
     cd "$src"
+    make distclean 2>/dev/null || true
     ./configure \
-        --host=aarch64-apple-darwin \
+        --host="$IOS_HOST" \
+        --build="$IOS_BUILD" \
         --prefix="$dest" \
         --enable-static \
         --disable-shared \
@@ -151,7 +161,7 @@ build_flac() {
         OGG_CFLAGS="-I$VENDOR_DIR/ogg/include" \
         OGG_LIBS="-L$VENDOR_DIR/ogg/lib -logg"
 
-    make -j"$(sysctl -n hw.ncpu)" clean install
+    make -j"$(sysctl -n hw.ncpu)" install
     cd "$ROOT_DIR"
 
     info "libFLAC built."
@@ -174,8 +184,10 @@ build_opus() {
     [ -d "$src" ] || tar -xzf "$archive" -C "$BUILD_DIR"
 
     cd "$src"
+    make distclean 2>/dev/null || true
     ./configure \
-        --host=aarch64-apple-darwin \
+        --host="$IOS_HOST" \
+        --build="$IOS_BUILD" \
         --prefix="$dest" \
         --enable-static \
         --disable-shared \
@@ -185,7 +197,7 @@ build_opus() {
         CFLAGS="$IOS_CFLAGS" \
         LDFLAGS="$IOS_LDFLAGS"
 
-    make -j"$(sysctl -n hw.ncpu)" clean install
+    make -j"$(sysctl -n hw.ncpu)" install
     cd "$ROOT_DIR"
 
     info "libopus built."
