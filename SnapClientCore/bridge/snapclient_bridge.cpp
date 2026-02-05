@@ -345,6 +345,92 @@ bool snapclient_configure_audio_session(void) {
     return true;
 }
 
+/* ── Diagnostics ────────────────────────────────────────────────── */
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
+int snapclient_test_tcp(const char* host, int port) {
+    BLOG_INFO("test_tcp: connecting to %s:%d", host, port);
+
+    // Resolve hostname
+    struct addrinfo hints = {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    struct addrinfo* res = nullptr;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    int err = getaddrinfo(host, port_str, &hints, &res);
+    if (err != 0) {
+        BLOG_ERROR("test_tcp: getaddrinfo failed: %s", gai_strerror(err));
+        return err;
+    }
+    BLOG_INFO("test_tcp: resolved %s", host);
+
+    // Create socket
+    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sock < 0) {
+        int e = errno;
+        BLOG_ERROR("test_tcp: socket() failed: %s", strerror(e));
+        freeaddrinfo(res);
+        return e;
+    }
+    BLOG_INFO("test_tcp: socket created fd=%d", sock);
+
+    // Connect
+    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+        int e = errno;
+        BLOG_ERROR("test_tcp: connect() failed: %s", strerror(e));
+        close(sock);
+        freeaddrinfo(res);
+        return e;
+    }
+    BLOG_INFO("test_tcp: connected!");
+    freeaddrinfo(res);
+
+    // Send a simple test message (Snapcast base message header is 26 bytes)
+    // We'll send garbage - server will reject it but we'll see if bytes flow
+    const char test_msg[] = "SNAPTEST";
+    ssize_t sent = send(sock, test_msg, sizeof(test_msg), 0);
+    if (sent < 0) {
+        int e = errno;
+        BLOG_ERROR("test_tcp: send() failed: %s", strerror(e));
+        close(sock);
+        return e;
+    }
+    BLOG_INFO("test_tcp: sent %zd bytes", sent);
+
+    // Try to read response (with timeout)
+    struct timeval tv = {2, 0};  // 2 second timeout
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[256];
+    ssize_t rcvd = recv(sock, buf, sizeof(buf) - 1, 0);
+    if (rcvd < 0) {
+        int e = errno;
+        if (e == EAGAIN || e == EWOULDBLOCK) {
+            BLOG_INFO("test_tcp: recv timeout (server didn't respond in 2s)");
+        } else {
+            BLOG_ERROR("test_tcp: recv() failed: %s", strerror(e));
+        }
+    } else if (rcvd == 0) {
+        BLOG_INFO("test_tcp: server closed connection (expected - we sent garbage)");
+    } else {
+        BLOG_INFO("test_tcp: received %zd bytes", rcvd);
+    }
+
+    close(sock);
+    BLOG_INFO("test_tcp: done, connection works!");
+    return 0;
+}
+
 /* ── Version ────────────────────────────────────────────────────── */
 
 const char* snapclient_version(void) {

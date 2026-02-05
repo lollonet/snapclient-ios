@@ -141,6 +141,12 @@ void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx);
 /// Returns true on success.
 bool snapclient_configure_audio_session(void);
 
+/* ── Diagnostics ────────────────────────────────────────────────── */
+
+/// Test raw TCP connection to host:port (bypasses Snapcast protocol).
+/// Returns 0 on success, or errno on failure. Logs details via log callback.
+int snapclient_test_tcp(const char* host, int port);
+
 /* ── Version info ───────────────────────────────────────────────── */
 
 /// Returns the snapclient core version string (e.g. "0.34.0").

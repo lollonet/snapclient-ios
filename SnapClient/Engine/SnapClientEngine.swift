@@ -205,6 +205,15 @@ final class SnapClientEngine: ObservableObject {
         Int(snapclient_protocol_version())
     }
 
+    /// Test raw TCP connection (bypasses Snapcast protocol).
+    /// Returns 0 on success, errno on failure. Check bridgeLogs for details.
+    func testTCP(host: String, port: Int = 1704) -> Int32 {
+        log.info("testTCP: \(host):\(port)")
+        return host.withCString { cHost in
+            snapclient_test_tcp(cHost, Int32(port))
+        }
+    }
+
     // MARK: - Private helpers
 
     private func configureAudioSession() {
