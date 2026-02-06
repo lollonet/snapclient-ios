@@ -6,6 +6,12 @@ import Foundation
 struct ClientVolume: Codable, Sendable {
     var percent: Int
     var muted: Bool
+
+    /// Create a volume with validated percent (clamped to 0-100).
+    init(percent: Int, muted: Bool) {
+        self.percent = max(0, min(100, percent))
+        self.muted = muted
+    }
 }
 
 /// Snapcast client info as returned by the server.
@@ -316,10 +322,12 @@ final class SnapcastRPCClient: ObservableObject {
             }
         }
 
+        #if DEBUG
         // Debug: print raw response
         if let rawString = String(data: responseData, encoding: .utf8) {
             print("[RPC] raw response (\(responseData.count) bytes): \(rawString.prefix(500))...")
         }
+        #endif
 
         let response = try decoder.decode(RPCResponse<T>.self, from: responseData)
         if let error = response.error {
