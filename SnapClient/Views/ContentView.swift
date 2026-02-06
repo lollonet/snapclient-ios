@@ -556,28 +556,50 @@ struct ClientRow: View {
     @State private var rpcError: String?
     @State private var showRPCError = false
 
+    private var isMuted: Bool {
+        client.config.volume.muted
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                editItem = .client(client, groupId: groupId)
-            } label: {
-                HStack {
-                    Circle()
-                        .fill(client.connected ? .green : .red)
-                        .frame(width: 8, height: 8)
-                    Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
-                        .font(.body)
-                    Spacer()
-                    Text("\(Int(isEditing ? sliderValue : Double(client.config.volume.percent)))%")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+            HStack {
+                Button {
+                    editItem = .client(client, groupId: groupId)
+                } label: {
+                    HStack {
+                        Circle()
+                            .fill(client.connected ? .green : .red)
+                            .frame(width: 8, height: 8)
+                        Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
+                            .font(.body)
+                        Spacer()
+                    }
+                }
+                .foregroundStyle(.primary)
+
+                Text("\(Int(isEditing ? sliderValue : Double(client.config.volume.percent)))%")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    toggleMute()
+                } label: {
+                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(isMuted ? .red : .secondary)
+                        .frame(width: 24)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    editItem = .client(client, groupId: groupId)
+                } label: {
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+                .buttonStyle(.plain)
             }
-            .foregroundStyle(.primary)
 
             Slider(
                 value: $sliderValue,
@@ -591,7 +613,7 @@ struct ClientRow: View {
                         do {
                             try await rpcClient.setClientVolume(
                                 clientId: client.id,
-                                volume: ClientVolume(percent: Int(sliderValue), muted: client.config.volume.muted)
+                                volume: ClientVolume(percent: Int(sliderValue), muted: isMuted)
                             )
                             await rpcClient.refreshStatus()
                         } catch {
@@ -601,6 +623,7 @@ struct ClientRow: View {
                     }
                 }
             }
+            .tint(isMuted ? .secondary : .accentColor)
             .onAppear {
                 sliderValue = Double(client.config.volume.percent)
             }
@@ -611,10 +634,26 @@ struct ClientRow: View {
             }
         }
         .padding(.vertical, 2)
+        .opacity(isMuted ? 0.5 : 1.0)
         .alert("Error", isPresented: $showRPCError) {
             Button("OK") { }
         } message: {
             Text(rpcError ?? "Unknown error")
+        }
+    }
+
+    private func toggleMute() {
+        Task {
+            do {
+                try await rpcClient.setClientVolume(
+                    clientId: client.id,
+                    volume: ClientVolume(percent: client.config.volume.percent, muted: !isMuted)
+                )
+                await rpcClient.refreshStatus()
+            } catch {
+                rpcError = error.localizedDescription
+                showRPCError = true
+            }
         }
     }
 }
