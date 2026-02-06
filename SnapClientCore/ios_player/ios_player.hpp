@@ -32,7 +32,7 @@ namespace player
 {
 
 /// Player name constant for iOS
-static constexpr auto IOS = "ios";
+static constexpr auto IOS_PLAYER = "ios";
 
 /// iOS audio player using AudioQueue Services
 class IOSPlayer : public Player

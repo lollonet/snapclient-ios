@@ -49,10 +49,11 @@ set(SNAPCLIENT_SOURCES
   ${SNAPCAST_DIR}/client/decoder/opus_decoder.cpp
   ${SNAPCAST_DIR}/client/decoder/null_decoder.cpp
 
-  # Player - CoreAudio (works on both macOS and iOS via shim) + File player
+  # Player - CoreAudio (works on both macOS and iOS via shim) + File player + iOS player
   ${SNAPCAST_DIR}/client/player/player.cpp
   ${SNAPCAST_DIR}/client/player/coreaudio_player.cpp
   ${SNAPCAST_DIR}/client/player/file_player.cpp
+  ${IOS_PLAYER_DIR}/ios_player.cpp
 
   # Common
   ${SNAPCAST_DIR}/common/base64.cpp
@@ -88,6 +89,7 @@ add_compile_definitions(
   FREEBSD                # Also needed: skips Linux-only ifr_hwaddr in utils.hpp
                          # (SIOCGIFMAC and ifr_ifru.ifru_addr work on iOS)
   HAS_COREAUDIO          # Enable CoreAudio player (works on iOS via shim)
+  HAS_IOS                # Enable iOS player (AudioQueue-based)
   HAS_FLAC               # Enable FLAC decoder
   HAS_OPUS               # Enable Opus decoder
   # HAS_OGG is NOT defined - we don't have libvorbis

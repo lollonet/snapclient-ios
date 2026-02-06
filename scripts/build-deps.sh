@@ -215,6 +215,13 @@ apply_ios_patches() {
         patch -p1 -N < "$patch_dir/ios-time-fix.patch" || true
         cd "$ROOT_DIR"
     fi
+
+    if [ -f "$patch_dir/ios-controller.patch" ]; then
+        info "Applying iOS controller patch..."
+        cd "$dest"
+        patch -p1 -N < "$patch_dir/ios-controller.patch" || true
+        cd "$ROOT_DIR"
+    fi
 }
 
 clone_snapcast() {
