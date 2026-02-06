@@ -87,7 +87,7 @@ static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...) {
 using work_guard_t = boost::asio::executor_work_guard<boost::asio::io_context::executor_type>;
 
 struct SnapClient {
-    std::mutex mutex;
+    std::recursive_mutex mutex;
 
     // Boost.Asio io_context - runs the networking and timers
     std::unique_ptr<boost::asio::io_context> io_context;
@@ -124,8 +124,19 @@ struct SnapClient {
 
 static void notify_state(SnapClient* c, SnapClientState new_state) {
     c->state.store(new_state);
-    if (c->state_cb) {
-        c->state_cb(c->state_ctx, new_state);
+
+    // Copy callback and context inside lock to avoid race with callback modification
+    SnapClientStateCallback cb = nullptr;
+    void* ctx = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(c->mutex);
+        cb = c->state_cb;
+        ctx = c->state_ctx;
+    }
+
+    // Call callback outside lock to avoid potential deadlock
+    if (cb) {
+        cb(ctx, new_state);
     }
 }
 
@@ -154,7 +165,7 @@ void snapclient_destroy(SnapClientRef client) {
 bool snapclient_start(SnapClientRef client, const char* host, int port) {
     if (!client || !host) return false;
 
-    std::lock_guard<std::mutex> lock(client->mutex);
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
 
     if (client->state.load() != SNAPCLIENT_STATE_DISCONNECTED) {
         return false; // already running
@@ -230,7 +241,7 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 void snapclient_stop(SnapClientRef client) {
     if (!client) return;
 
-    std::lock_guard<std::mutex> lock(client->mutex);
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
 
     if (client->state.load() == SNAPCLIENT_STATE_DISCONNECTED) {
         return;
@@ -323,13 +334,13 @@ int snapclient_get_latency(SnapClientRef client) {
 
 void snapclient_set_name(SnapClientRef client, const char* name) {
     if (!client || !name) return;
-    std::lock_guard<std::mutex> lock(client->mutex);
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->name = name;
 }
 
 void snapclient_set_instance(SnapClientRef client, int instance) {
     if (!client) return;
-    std::lock_guard<std::mutex> lock(client->mutex);
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->instance = instance;
 }
 
@@ -343,7 +354,7 @@ void snapclient_set_state_callback(SnapClientRef client,
                                    SnapClientStateCallback callback,
                                    void* ctx) {
     if (!client) return;
-    std::lock_guard<std::mutex> lock(client->mutex);
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->state_cb = callback;
     client->state_ctx = ctx;
 }
@@ -352,7 +363,7 @@ void snapclient_set_settings_callback(SnapClientRef client,
                                       SnapClientSettingsCallback callback,
                                       void* ctx) {
     if (!client) return;
-    std::lock_guard<std::mutex> lock(client->mutex);
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->settings_cb = callback;
     client->settings_ctx = ctx;
 }
