@@ -222,6 +222,13 @@ apply_ios_patches() {
         patch -p1 -N < "$patch_dir/ios-controller.patch" || true
         cd "$ROOT_DIR"
     fi
+
+    if [ -f "$patch_dir/ios-time-sync-wait.patch" ]; then
+        info "Applying iOS time sync wait patch..."
+        cd "$dest"
+        patch -p1 -N < "$patch_dir/ios-time-sync-wait.patch" || true
+        cd "$ROOT_DIR"
+    fi
 }
 
 clone_snapcast() {

@@ -1,0 +1,32 @@
+--- a/client/time_provider.hpp
++++ b/client/time_provider.hpp
+@@ -54,6 +54,12 @@ public:
+     /// Set diff from round-trip-times client-to-server and server-to-client
+     void setDiff(const tv& c2s, const tv& s2c);
+
++    /// @return true if at least one time sync has completed
++    inline bool isSynced() const
++    {
++        return !diffBuffer_.empty();
++    }
++
+     /// @return time diff to server
+     template <typename T>
+     inline T getDiffToServer() const
+--- a/client/stream.cpp
++++ b/client/stream.cpp
+@@ -300,6 +300,15 @@ bool Stream::getPlayerChunk(void* outputBuffer, const cs::usec& outputBufferDacT
+     try
+     {
++        // If time sync hasn't completed yet, return silence instead of
++        // dropping chunks based on incorrect age calculation
++        if (!TimeProvider::getInstance().isSynced())
++        {
++            LOG(DEBUG, LOG_TAG) << "Time sync not ready, returning silence\n";
++            getSilentPlayerChunk(outputBuffer, frames);
++            return true;
++        }
++
+         if (hard_sync_)
+         {
+             cs::nsec req_chunk_duration = cs::nsec(static_cast<cs::nsec::rep>(frames / format_.nsRate()));
