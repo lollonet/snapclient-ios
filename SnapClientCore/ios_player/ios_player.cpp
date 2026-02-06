@@ -23,11 +23,47 @@
 // local headers
 #include "common/aixlog.hpp"
 
+// Thread priority for real-time audio
+#include <pthread.h>
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
+
 namespace player
 {
 
 // Global pause state for bridge control
 std::atomic<bool> g_ios_player_paused{false};
+
+/// Set real-time thread priority for audio work
+static void setRealtimeThreadPriority()
+{
+    // Get current thread
+    mach_port_t thread = mach_thread_self();
+
+    // Set thread to time-constraint (real-time) policy
+    thread_time_constraint_policy_data_t policy;
+    policy.period = 0;        // Default period
+    policy.computation = 10000000;  // 10ms computation time
+    policy.constraint = 20000000;   // 20ms constraint
+    policy.preemptible = TRUE;
+
+    kern_return_t result = thread_policy_set(
+        thread,
+        THREAD_TIME_CONSTRAINT_POLICY,
+        (thread_policy_t)&policy,
+        THREAD_TIME_CONSTRAINT_POLICY_COUNT
+    );
+
+    if (result != KERN_SUCCESS)
+    {
+        // Fall back to high priority via pthread
+        struct sched_param param;
+        param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+        pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+    }
+
+    mach_port_deallocate(mach_task_self(), thread);
+}
 
 #define NUM_BUFFERS 4
 
@@ -42,7 +78,7 @@ void ios_callback(void* custom_data, AudioQueueRef queue, AudioQueueBufferRef bu
 
 
 IOSPlayer::IOSPlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
-    : Player(io_context, settings, stream), ms_(150), pubStream_(stream)
+    : Player(io_context, settings, stream), ms_(200), pubStream_(stream)  // 200ms buffer for iOS stability
 {
 }
 
@@ -128,6 +164,10 @@ bool IOSPlayer::needsThread() const
 
 void IOSPlayer::worker()
 {
+    // Boost thread priority for real-time audio
+    setRealtimeThreadPriority();
+    LOG(INFO, LOG_TAG) << "Audio worker thread started with real-time priority\n";
+
     while (active_)
     {
         if (pubStream_->waitForChunk(std::chrono::milliseconds(100)))
