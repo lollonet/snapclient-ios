@@ -303,14 +303,29 @@ struct PlayerView: View {
     private var controlButtons: some View {
         HStack(spacing: 24) {
             if engine.state.isActive {
+                // Play/Pause button
+                Button {
+                    engine.togglePlayback()
+                } label: {
+                    Label(
+                        engine.isPaused ? "Play" : "Pause",
+                        systemImage: engine.isPaused ? "play.fill" : "pause.fill"
+                    )
+                    .font(.title2)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(engine.isPaused ? .green : .orange)
+                .accessibilityHint(engine.isPaused ? "Resume audio playback" : "Pause audio playback")
+
+                // Disconnect button
                 Button(role: .destructive) {
                     engine.stop()
                     rpcClient.disconnect()
                 } label: {
-                    Label("Stop", systemImage: "stop.fill")
+                    Label("Disconnect", systemImage: "xmark.circle.fill")
                         .font(.title2)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .accessibilityHint("Disconnects from the Snapcast server")
             } else {
                 // Connect to first discovered server, or prompt to go to Servers tab
