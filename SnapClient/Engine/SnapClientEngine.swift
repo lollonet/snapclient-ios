@@ -84,6 +84,18 @@ final class SnapClientEngine: ObservableObject {
     /// Enable automatic reconnection on disconnection.
     @Published var autoReconnect: Bool = true
 
+    /// Force audio to local speaker (prevents AirPlay loop).
+    @Published var forceLocalSpeaker: Bool = false {
+        didSet {
+            if state.isActive {
+                configureAudioSession() // Re-apply
+            }
+        }
+    }
+
+    /// Warning: AirPlay output detected (potential loop).
+    @Published private(set) var airPlayLoopWarning: Bool = false
+
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
@@ -239,11 +251,42 @@ final class SnapClientEngine: ObservableObject {
     private func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: .mixWithOthers)
-            try session.setActive(true)
-            log.info("Audio session configured for playback")
+            // Use playback category for background audio
+            // .duckOthers: reduce volume of other apps instead of mixing
+            // .overrideMutedMicrophoneInterruption: don't interrupt for muted mic
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            // Request larger IO buffer for more stable playback
+            try session.setPreferredIOBufferDuration(0.01) // 10ms
+
+            // Force output to speaker to avoid AirPlay loop
+            // (when Tidal sends to Snapserver via AirPlay, we don't want our output going back)
+            if forceLocalSpeaker {
+                try session.overrideOutputAudioPort(.speaker)
+                log.info("Audio forced to local speaker (loop prevention)")
+            }
+
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+            // Check for AirPlay output and warn
+            checkForAirPlayLoop()
+
+            log.info("Audio session configured: sampleRate=\(session.sampleRate), ioBuffer=\(session.ioBufferDuration * 1000)ms")
         } catch {
             log.error("Audio session setup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Check if audio is routing to AirPlay (potential loop)
+    private func checkForAirPlayLoop() {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs
+        let hasAirPlay = outputs.contains { $0.portType == .airPlay }
+
+        if hasAirPlay {
+            log.warning("Audio routing to AirPlay detected - may cause loop if Snapserver receives from AirPlay")
+            airPlayLoopWarning = true
+        } else {
+            airPlayLoopWarning = false
         }
     }
 

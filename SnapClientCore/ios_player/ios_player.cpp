@@ -26,7 +26,7 @@
 namespace player
 {
 
-#define NUM_BUFFERS 2
+#define NUM_BUFFERS 4
 
 static constexpr auto LOG_TAG = "IOSPlayer";
 
@@ -39,7 +39,7 @@ void ios_callback(void* custom_data, AudioQueueRef queue, AudioQueueBufferRef bu
 
 
 IOSPlayer::IOSPlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
-    : Player(io_context, settings, stream), ms_(100), pubStream_(stream)
+    : Player(io_context, settings, stream), ms_(150), pubStream_(stream)
 {
 }
 

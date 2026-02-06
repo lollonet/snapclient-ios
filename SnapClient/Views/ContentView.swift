@@ -74,6 +74,21 @@ struct PlayerView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
+                // AirPlay loop warning
+                if engine.airPlayLoopWarning {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                        Text("AirPlay attivo - possibile loop audio")
+                            .font(.caption)
+                        Spacer()
+                        Toggle("", isOn: $engine.forceLocalSpeaker)
+                            .labelsHidden()
+                    }
+                    .padding(8)
+                    .background(.yellow.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+                }
+
                 // Now playing info at top
                 nowPlayingSection
 
@@ -103,33 +118,72 @@ struct PlayerView: View {
             if let stream = currentStream,
                let meta = stream.properties?.metadata,
                meta.title != nil || meta.artist != nil {
-                VStack(spacing: 4) {
-                    if let title = meta.title {
-                        Text(title)
-                            .font(.headline)
-                            .lineLimit(1)
+                VStack(spacing: 16) {
+                    // Cover art
+                    if let artUrlString = meta.artUrl,
+                       let artUrl = URL(string: artUrlString) {
+                        AsyncImage(url: artUrl) { phase in
+                            switch phase {
+                            case .empty:
+                                ProgressView()
+                                    .frame(width: 200, height: 200)
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 200, height: 200)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
+                            case .failure:
+                                albumPlaceholder
+                            @unknown default:
+                                albumPlaceholder
+                            }
+                        }
+                    } else {
+                        albumPlaceholder
                     }
-                    if let artist = meta.artist {
-                        Text(artist)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    if let album = meta.album {
-                        Text(album)
-                            .font(.caption)
+
+                    // Track info
+                    VStack(spacing: 4) {
+                        if let title = meta.title {
+                            Text(title)
+                                .font(.headline)
+                                .lineLimit(1)
+                        }
+                        if let artist = meta.artist {
+                            Text(artist)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        if let album = meta.album {
+                            Text(album)
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Text(stream.id)
+                            .font(.caption2)
                             .foregroundStyle(.tertiary)
-                            .lineLimit(1)
                     }
-                    Text(stream.id)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
+    }
+
+    private var albumPlaceholder: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.secondary.opacity(0.15))
+            Image(systemName: "music.note")
+                .font(.system(size: 60))
+                .foregroundStyle(.secondary.opacity(0.5))
+        }
+        .frame(width: 200, height: 200)
     }
 
     /// Server hostname from discovery
@@ -140,15 +194,9 @@ struct PlayerView: View {
 
     private var statusView: some View {
         VStack(spacing: 8) {
-            Image(systemName: engine.state.isActive ? "speaker.wave.3.fill" : "speaker.slash")
-                .font(.system(size: 64))
-                .foregroundStyle(engine.state.isActive ? .green : .secondary)
-                .symbolEffect(.variableColor, isActive: engine.state == .playing)
-                .accessibilityHidden(true)
-
             Text(engine.state.displayName)
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(engine.state.isActive ? .green : .secondary)
 
             // Server info: FQDN and IP
             if let host = engine.connectedHost {
@@ -195,9 +243,6 @@ struct PlayerView: View {
     private var volumeSection: some View {
         VStack(spacing: 8) {
             HStack {
-                Image(systemName: "speaker.fill")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
                 Slider(
                     value: $volumeSlider,
                     in: 0...100,
@@ -214,12 +259,11 @@ struct PlayerView: View {
                         }
                     }
                 }
+                .tint(serverMuted ? .secondary : .accentColor)
                 .accessibilityLabel("Volume")
                 .accessibilityValue("\(Int(volumeSlider)) percent")
-                Image(systemName: "speaker.wave.3.fill")
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
             }
+            .opacity(serverMuted ? 0.4 : 1.0)
             .onAppear {
                 volumeSlider = Double(serverVolume)
             }
@@ -291,8 +335,22 @@ struct PlayerView: View {
 
 // MARK: - Groups View
 
+/// What to show in the edit sheet
+enum GroupsEditItem: Identifiable {
+    case group(SnapcastGroup)
+    case client(SnapcastClient, groupId: String)
+
+    var id: String {
+        switch self {
+        case .group(let g): return "group-\(g.id)"
+        case .client(let c, _): return "client-\(c.id)"
+        }
+    }
+}
+
 struct GroupsView: View {
     @EnvironmentObject var rpcClient: SnapcastRPCClient
+    @State private var editItem: GroupsEditItem?
 
     var body: some View {
         NavigationStack {
@@ -300,7 +358,7 @@ struct GroupsView: View {
                 if let status = rpcClient.serverStatus {
                     List {
                         ForEach(status.groups) { group in
-                            GroupSection(group: group)
+                            GroupSection(group: group, editItem: $editItem)
                         }
 
                         if !status.streams.isEmpty {
@@ -322,6 +380,14 @@ struct GroupsView: View {
                 }
             }
             .navigationTitle("Groups")
+            .sheet(item: $editItem) { item in
+                switch item {
+                case .group(let group):
+                    GroupEditSheet(group: group)
+                case .client(let client, let groupId):
+                    ClientEditSheet(client: client, currentGroupId: groupId)
+                }
+            }
             .refreshable {
                 await rpcClient.refreshStatus()
             }
@@ -331,46 +397,129 @@ struct GroupsView: View {
 
 struct GroupSection: View {
     let group: SnapcastGroup
+    @Binding var editItem: GroupsEditItem?
     @EnvironmentObject var rpcClient: SnapcastRPCClient
+    @State private var groupVolume: Double = 100
+    @State private var isEditingVolume = false
+
+    /// Average volume of all connected clients in the group
+    private var averageVolume: Int {
+        let connectedClients = group.clients.filter(\.connected)
+        guard !connectedClients.isEmpty else { return 100 }
+        let total = connectedClients.reduce(0) { $0 + $1.config.volume.percent }
+        return total / connectedClients.count
+    }
 
     var body: some View {
         Section {
+            // Group volume slider
+            HStack(spacing: 12) {
+                Image(systemName: "speaker.wave.2")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+                Slider(
+                    value: $groupVolume,
+                    in: 0...100,
+                    step: 1
+                ) { editing in
+                    isEditingVolume = editing
+                    if !editing {
+                        setAllClientsVolume(Int(groupVolume))
+                    }
+                }
+                .tint(group.muted ? .secondary : .accentColor)
+                Text("\(Int(groupVolume))%")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40)
+            }
+            .opacity(group.muted ? 0.4 : 1.0)
+            .onAppear {
+                groupVolume = Double(averageVolume)
+            }
+            .onChange(of: averageVolume) { _, newValue in
+                if !isEditingVolume {
+                    groupVolume = Double(newValue)
+                }
+            }
+
             ForEach(group.clients) { client in
-                ClientRow(client: client)
+                ClientRow(client: client, groupId: group.id, editItem: $editItem)
             }
         } header: {
             HStack {
-                Text(group.name.isEmpty ? "Group" : group.name)
-                Spacer()
-                if group.muted {
-                    Image(systemName: "speaker.slash.fill")
-                        .foregroundStyle(.secondary)
+                Button {
+                    editItem = .group(group)
+                } label: {
+                    HStack {
+                        Text(group.name.isEmpty ? "Group" : group.name)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
+                .foregroundStyle(.primary)
+
+                Spacer()
+
+                Button {
+                    Task {
+                        try? await rpcClient.setGroupMute(groupId: group.id, muted: !group.muted)
+                        await rpcClient.refreshStatus()
+                    }
+                } label: {
+                    Image(systemName: group.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(group.muted ? .red : .secondary)
+                }
+                .buttonStyle(.plain)
             }
+        }
+    }
+
+    private func setAllClientsVolume(_ volume: Int) {
+        Task {
+            for client in group.clients where client.connected {
+                try? await rpcClient.setClientVolume(
+                    clientId: client.id,
+                    volume: ClientVolume(percent: volume, muted: client.config.volume.muted)
+                )
+            }
+            await rpcClient.refreshStatus()
         }
     }
 }
 
 struct ClientRow: View {
     let client: SnapcastClient
+    let groupId: String
+    @Binding var editItem: GroupsEditItem?
     @EnvironmentObject var rpcClient: SnapcastRPCClient
     @State private var sliderValue: Double = 0
     @State private var isEditing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Circle()
-                    .fill(client.connected ? .green : .red)
-                    .frame(width: 8, height: 8)
-                Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
-                    .font(.body)
-                Spacer()
-                Text("\(Int(isEditing ? sliderValue : Double(client.config.volume.percent)))%")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+            Button {
+                editItem = .client(client, groupId: groupId)
+            } label: {
+                HStack {
+                    Circle()
+                        .fill(client.connected ? .green : .red)
+                        .frame(width: 8, height: 8)
+                    Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
+                        .font(.body)
+                    Spacer()
+                    Text("\(Int(isEditing ? sliderValue : Double(client.config.volume.percent)))%")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .foregroundStyle(.primary)
 
             Slider(
                 value: $sliderValue,
@@ -399,6 +548,191 @@ struct ClientRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - Edit Sheets
+
+struct ClientEditSheet: View {
+    let client: SnapcastClient
+    let currentGroupId: String
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var rpcClient: SnapcastRPCClient
+    @State private var name: String = ""
+    @State private var latency: String = ""
+    @State private var selectedGroupId: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Client Info") {
+                    LabeledContent("ID", value: client.id)
+                    if let host = client.host {
+                        if let hostName = host.name {
+                            LabeledContent("Host", value: hostName)
+                        }
+                        if let ip = host.ip {
+                            LabeledContent("IP", value: ip)
+                        }
+                        if let os = host.os {
+                            LabeledContent("OS", value: os)
+                        }
+                    }
+                    HStack {
+                        Circle()
+                            .fill(client.connected ? .green : .red)
+                            .frame(width: 10, height: 10)
+                        Text(client.connected ? "Connected" : "Disconnected")
+                    }
+                }
+
+                Section("Settings") {
+                    TextField("Display Name", text: $name)
+                    TextField("Latency (ms)", text: $latency)
+                        .keyboardType(.numberPad)
+                }
+
+                if let groups = rpcClient.serverStatus?.groups, groups.count > 1 {
+                    Section("Group") {
+                        Picker("Move to Group", selection: $selectedGroupId) {
+                            ForEach(groups) { group in
+                                Text(group.name.isEmpty ? "Group \(group.id.prefix(8))" : group.name)
+                                    .tag(group.id)
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    Button("Delete Client", role: .destructive) {
+                        Task {
+                            try? await rpcClient.deleteClient(clientId: client.id)
+                            await rpcClient.refreshStatus()
+                            dismiss()
+                        }
+                    }
+                    .disabled(client.connected)
+                }
+            }
+            .navigationTitle("Edit Client")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveChanges() }
+                }
+            }
+            .onAppear {
+                name = client.config.name
+                latency = String(client.config.latency)
+                selectedGroupId = currentGroupId
+            }
+        }
+    }
+
+    private func saveChanges() {
+        Task {
+            // Save name if changed
+            if name != client.config.name {
+                try? await rpcClient.setClientName(clientId: client.id, name: name)
+            }
+            // Save latency if changed
+            if let newLatency = Int(latency), newLatency != client.config.latency {
+                try? await rpcClient.setClientLatency(clientId: client.id, latency: newLatency)
+            }
+            // Move to different group if changed
+            if selectedGroupId != currentGroupId {
+                // Get current clients in target group and add this one
+                if let targetGroup = rpcClient.serverStatus?.groups.first(where: { $0.id == selectedGroupId }) {
+                    var clientIds = targetGroup.clients.map(\.id)
+                    clientIds.append(client.id)
+                    try? await rpcClient.setGroupClients(groupId: selectedGroupId, clientIds: clientIds)
+                }
+            }
+            await rpcClient.refreshStatus()
+            dismiss()
+        }
+    }
+}
+
+struct GroupEditSheet: View {
+    let group: SnapcastGroup
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject var rpcClient: SnapcastRPCClient
+    @State private var name: String = ""
+    @State private var selectedStreamId: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Group Info") {
+                    LabeledContent("ID", value: String(group.id.prefix(8)))
+                    LabeledContent("Clients", value: "\(group.clients.count)")
+                }
+
+                Section("Settings") {
+                    TextField("Group Name", text: $name)
+                }
+
+                if let streams = rpcClient.serverStatus?.streams, !streams.isEmpty {
+                    Section("Stream") {
+                        Picker("Audio Stream", selection: $selectedStreamId) {
+                            ForEach(streams) { stream in
+                                HStack {
+                                    Text(stream.id)
+                                    if stream.status == "playing" {
+                                        Image(systemName: "music.note")
+                                    }
+                                }
+                                .tag(stream.id)
+                            }
+                        }
+                    }
+                }
+
+                Section("Clients") {
+                    ForEach(group.clients) { client in
+                        HStack {
+                            Circle()
+                                .fill(client.connected ? .green : .red)
+                                .frame(width: 8, height: 8)
+                            Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Group")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { saveChanges() }
+                }
+            }
+            .onAppear {
+                name = group.name
+                selectedStreamId = group.stream_id
+            }
+        }
+    }
+
+    private func saveChanges() {
+        Task {
+            // Save name if changed
+            if name != group.name {
+                try? await rpcClient.setGroupName(groupId: group.id, name: name)
+            }
+            // Save stream if changed
+            if selectedStreamId != group.stream_id {
+                try? await rpcClient.setGroupStream(groupId: group.id, streamId: selectedStreamId)
+            }
+            await rpcClient.refreshStatus()
+            dismiss()
+        }
     }
 }
 

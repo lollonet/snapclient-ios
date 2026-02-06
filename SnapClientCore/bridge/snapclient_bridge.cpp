@@ -174,7 +174,7 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
         ClientSettings settings;
         std::string uri_str = "tcp://" + client->host + ":" + std::to_string(client->port);
         settings.server.uri = StreamUri(uri_str);
-        settings.player.player_name = "coreaudio";
+        settings.player.player_name = "ios";
         settings.player.latency = client->latency_ms.load();
         settings.instance = client->instance;
         settings.host_id = client->name;
