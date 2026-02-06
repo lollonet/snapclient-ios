@@ -97,6 +97,9 @@ final class SnapClientEngine: ObservableObject {
     /// Warning: AirPlay output detected (potential loop).
     @Published private(set) var airPlayLoopWarning: Bool = false
 
+    /// Error message from audio session configuration (nil if successful).
+    @Published private(set) var audioSessionError: String?
+
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
@@ -170,6 +173,7 @@ final class SnapClientEngine: ObservableObject {
     // MARK: - Connection
 
     /// Connect to a Snapserver and start audio playback.
+    /// The connection is performed on a background thread to avoid blocking the UI.
     func start(host: String, port: Int = 1704) {
         guard let ref = clientRef else {
             log.error("[\(self.instanceId)] start: clientRef is nil!")
@@ -179,17 +183,32 @@ final class SnapClientEngine: ObservableObject {
         // Debug: log raw bytes of host string
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
+
+        // Configure audio session on main thread (AVAudioSession requirement)
         configureAudioSession()
 
-        let success = host.withCString { cHost in
-            snapclient_start(ref, cHost, Int32(port))
-        }
-        log.info("[\(self.instanceId)] snapclient_start returned \(success)")
+        // Capture values for the background task
+        let hostCopy = host
+        let portCopy = port
+        let instanceId = self.instanceId
 
-        if success {
-            connectedHost = host
-            connectedPort = port
-            lastServer = (host, port)
+        // Perform blocking TCP connection on background thread
+        Task.detached { [weak self] in
+            let success = hostCopy.withCString { cHost in
+                snapclient_start(ref, cHost, Int32(portCopy))
+            }
+
+            // Update state on main thread
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                log.info("[\(instanceId)] snapclient_start returned \(success)")
+
+                if success {
+                    self.connectedHost = hostCopy
+                    self.connectedPort = portCopy
+                    self.lastServer = (hostCopy, portCopy)
+                }
+            }
         }
     }
 
@@ -303,9 +322,12 @@ final class SnapClientEngine: ObservableObject {
             // Check for AirPlay output and warn
             checkForAirPlayLoop()
 
+            audioSessionError = nil
             log.info("Audio session configured: sampleRate=\(session.sampleRate), ioBuffer=\(session.ioBufferDuration * 1000)ms")
         } catch {
-            log.error("Audio session setup failed: \(error.localizedDescription)")
+            let errorMsg = "Audio session setup failed: \(error.localizedDescription)"
+            log.error("\(errorMsg)")
+            audioSessionError = errorMsg
         }
     }
 
@@ -383,8 +405,10 @@ final class SnapClientEngine: ObservableObject {
             default:                     prefix = "[?]"
             }
             let line = "\(prefix) \(message)"
+            #if DEBUG
             // Also print to stdout for Xcode console
             print("[SnapBridge] \(line)")
+            #endif
             Task { @MainActor in
                 engine.bridgeLogs.insert(line, at: 0)
                 if engine.bridgeLogs.count > engine.maxLogLines {
