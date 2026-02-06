@@ -12,6 +12,7 @@
 #include "client_settings.hpp"
 #include "controller.hpp"
 #include "common/aixlog.hpp"
+#include "ios_player.hpp"
 
 // Standard headers
 #include <atomic>
@@ -117,6 +118,9 @@ struct SnapClient {
     void* state_ctx = nullptr;
     SnapClientSettingsCallback settings_cb = nullptr;
     void* settings_ctx = nullptr;
+
+    // Playback control
+    std::atomic<bool> paused{false};
 };
 
 /* ── Helpers ────────────────────────────────────────────────────── */
@@ -284,6 +288,26 @@ void snapclient_set_muted(SnapClientRef client, bool muted) {
 
 bool snapclient_get_muted(SnapClientRef client) {
     return client ? client->muted.load() : false;
+}
+
+/* ── Playback control ───────────────────────────────────────────── */
+
+void snapclient_pause(SnapClientRef client) {
+    if (!client) return;
+    BLOG_INFO("pause: pausing audio playback");
+    client->paused.store(true);
+    player::g_ios_player_paused.store(true);
+}
+
+void snapclient_resume(SnapClientRef client) {
+    if (!client) return;
+    BLOG_INFO("resume: resuming audio playback");
+    client->paused.store(false);
+    player::g_ios_player_paused.store(false);
+}
+
+bool snapclient_is_paused(SnapClientRef client) {
+    return client ? client->paused.load() : false;
 }
 
 /* ── Latency ────────────────────────────────────────────────────── */

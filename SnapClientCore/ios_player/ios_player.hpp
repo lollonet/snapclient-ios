@@ -28,11 +28,18 @@
 // iOS AudioToolbox
 #include <AudioToolbox/AudioToolbox.h>
 
+// Standard headers
+#include <atomic>
+
 namespace player
 {
 
 /// Player name constant for iOS
 static constexpr auto IOS_PLAYER = "ios";
+
+/// Global pause state (shared across all IOSPlayer instances)
+/// Used by the bridge to control playback without accessing Controller internals
+extern std::atomic<bool> g_ios_player_paused;
 
 /// iOS audio player using AudioQueue Services
 class IOSPlayer : public Player
@@ -46,6 +53,15 @@ public:
 
     void playerCallback(AudioQueueRef queue, AudioQueueBufferRef buffer);
 
+    /// Pause audio playback (keeps connection alive)
+    void pause();
+
+    /// Resume audio playback
+    void resume();
+
+    /// @return true if audio is paused
+    bool isPaused() const { return paused_; }
+
 protected:
     void worker() override;
     bool needsThread() const override;
@@ -57,9 +73,11 @@ private:
     size_t ms_;
     size_t frames_;
     size_t buff_size_;
+    AudioQueueRef queue_{nullptr};
     AudioQueueTimelineRef timeLine_;
     std::shared_ptr<Stream> pubStream_;
     uint64_t lastChunkTick{0};
+    std::atomic<bool> paused_{false};
 };
 
 } // namespace player

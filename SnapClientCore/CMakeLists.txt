@@ -129,6 +129,7 @@ add_library(snapclient_bridge STATIC
 target_link_libraries(snapclient_bridge PRIVATE snapclient_core)
 target_include_directories(snapclient_bridge PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/bridge
+  ${IOS_PLAYER_DIR}
 )
 
 # ── Install ──────────────────────────────────────────────────────────

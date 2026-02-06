@@ -26,6 +26,9 @@
 namespace player
 {
 
+// Global pause state for bridge control
+std::atomic<bool> g_ios_player_paused{false};
+
 #define NUM_BUFFERS 4
 
 static constexpr auto LOG_TAG = "IOSPlayer";
@@ -52,9 +55,33 @@ IOSPlayer::~IOSPlayer()
 std::vector<PcmDevice> IOSPlayer::pcm_list()
 {
     // iOS doesn't support device enumeration - there's only the system output
-    std::vector<PcmDevice> result;
-    result.push_back(PcmDevice(0, "Default Output"));
-    return result;
+    std::vector<PcmDevice> devices;
+    devices.push_back(PcmDevice(0, "Default Output"));
+    return devices;
+}
+
+
+void IOSPlayer::pause()
+{
+    LOG(INFO, LOG_TAG) << "Pausing audio playback\n";
+    paused_.store(true);
+    g_ios_player_paused.store(true);
+    if (queue_)
+    {
+        AudioQueuePause(queue_);
+    }
+}
+
+
+void IOSPlayer::resume()
+{
+    LOG(INFO, LOG_TAG) << "Resuming audio playback\n";
+    paused_.store(false);
+    g_ios_player_paused.store(false);
+    if (queue_)
+    {
+        AudioQueueStart(queue_, NULL);
+    }
 }
 
 
@@ -148,6 +175,9 @@ bool IOSPlayer::initAudioQueue()
         return false;
     }
 
+    // Store queue reference for pause/resume
+    queue_ = queue;
+
     status = AudioQueueCreateTimeline(queue, &timeLine_);
     if (status != noErr)
     {
@@ -170,13 +200,21 @@ bool IOSPlayer::initAudioQueue()
     }
 
     LOG(DEBUG, LOG_TAG) << "IOSPlayer::initAudioQueue starting\n";
-    // Note: AudioQueueCreateTimeline already called above - don't duplicate
-    status = AudioQueueStart(queue, NULL);
-    if (status != noErr)
+    // Start in paused state if already paused
+    if (!paused_.load())
     {
-        LOG(ERROR, LOG_TAG) << "AudioQueueStart failed: " << status << "\n";
-        AudioQueueDispose(queue, true);
-        return false;
+        status = AudioQueueStart(queue, NULL);
+        if (status != noErr)
+        {
+            LOG(ERROR, LOG_TAG) << "AudioQueueStart failed: " << status << "\n";
+            queue_ = nullptr;
+            AudioQueueDispose(queue, true);
+            return false;
+        }
+    }
+    else
+    {
+        LOG(INFO, LOG_TAG) << "Audio queue created but paused\n";
     }
 
     CFRunLoopRun();
@@ -186,6 +224,7 @@ bool IOSPlayer::initAudioQueue()
 
 void IOSPlayer::uninitAudioQueue(AudioQueueRef queue)
 {
+    queue_ = nullptr;
     AudioQueueStop(queue, false);
     AudioQueueDispose(queue, false);
     pubStream_->clearChunks();

@@ -48,6 +48,19 @@ void snapclient_stop(SnapClientRef client);
 /// Returns true if the client is currently connected and playing.
 bool snapclient_is_connected(SnapClientRef client);
 
+/* ── Playback control ──────────────────────────────────────────────── */
+
+/// Pause audio playback while keeping the connection alive.
+/// The client continues to receive audio data and sync with the server,
+/// but audio output is silenced.
+void snapclient_pause(SnapClientRef client);
+
+/// Resume audio playback after a pause.
+void snapclient_resume(SnapClientRef client);
+
+/// Returns true if audio playback is currently paused.
+bool snapclient_is_paused(SnapClientRef client);
+
 /* ── Volume ─────────────────────────────────────────────────────── */
 
 /// Set playback volume (0–100).

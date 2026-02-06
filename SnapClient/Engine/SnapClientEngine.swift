@@ -50,6 +50,7 @@ final class SnapClientEngine: ObservableObject {
     @Published var latencyMs: Int = 0 {
         didSet { applyLatency() }
     }
+    @Published private(set) var isPaused: Bool = false
 
     // MARK: - Server info
 
@@ -209,6 +210,34 @@ final class SnapClientEngine: ObservableObject {
         log.info("reconnect: \(host):\(port)")
         stop()
         start(host: host, port: port)
+    }
+
+    // MARK: - Playback Control
+
+    /// Pause audio playback while keeping the connection alive.
+    /// The client continues to receive audio data and sync with the server.
+    func pause() {
+        guard let ref = clientRef else { return }
+        log.info("pause: pausing audio playback")
+        snapclient_pause(ref)
+        isPaused = true
+    }
+
+    /// Resume audio playback after a pause.
+    func resume() {
+        guard let ref = clientRef else { return }
+        log.info("resume: resuming audio playback")
+        snapclient_resume(ref)
+        isPaused = false
+    }
+
+    /// Toggle pause/resume state.
+    func togglePlayback() {
+        if isPaused {
+            resume()
+        } else {
+            pause()
+        }
     }
 
     // MARK: - Identity
