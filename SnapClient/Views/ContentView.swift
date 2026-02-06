@@ -32,6 +32,20 @@ struct PlayerView: View {
     @EnvironmentObject var discovery: ServerDiscovery
     @EnvironmentObject var rpcClient: SnapcastRPCClient
 
+    @State private var volumeSlider: Double = 100
+    @State private var isEditingVolume = false
+
+    /// Find our client in the server status (matches on host_id containing "SnapForge")
+    private var currentClient: SnapcastClient? {
+        rpcClient.serverStatus?.allClients.first { client in
+            // Match by name containing SnapForge or by connected host IP
+            let nameMatch = client.config.name.contains("SnapForge") ||
+                            client.host?.name?.contains("SnapForge") ?? false
+            let ipMatch = client.host?.ip == engine.connectedHost
+            return nameMatch || ipMatch
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 32) {
@@ -79,42 +93,69 @@ struct PlayerView: View {
     }
 
     private var volumeSection: some View {
-        VStack(spacing: 8) {
+        let volume = currentClient?.config.volume ?? ClientVolume(percent: 100, muted: false)
+
+        return VStack(spacing: 8) {
             HStack {
                 Image(systemName: "speaker.fill")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
-                Slider(value: volumeBinding, in: 0...100, step: 1)
-                    .accessibilityLabel("Volume")
-                    .accessibilityValue("\(engine.volume) percent")
+                Slider(
+                    value: $volumeSlider,
+                    in: 0...100,
+                    step: 1
+                ) { editing in
+                    isEditingVolume = editing
+                    if !editing, let client = currentClient {
+                        Task {
+                            try? await rpcClient.setClientVolume(
+                                clientId: client.id,
+                                volume: ClientVolume(percent: Int(volumeSlider), muted: volume.muted)
+                            )
+                            await rpcClient.refreshStatus()
+                        }
+                    }
+                }
+                .accessibilityLabel("Volume")
+                .accessibilityValue("\(Int(volumeSlider)) percent")
                 Image(systemName: "speaker.wave.3.fill")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
+            .onAppear {
+                volumeSlider = Double(volume.percent)
+            }
+            .onChange(of: volume.percent) { _, newValue in
+                if !isEditingVolume {
+                    volumeSlider = Double(newValue)
+                }
+            }
 
             HStack {
-                Text("\(engine.volume)%")
+                Text("\(Int(volumeSlider))%")
                     .font(.caption)
                     .monospacedDigit()
                     .accessibilityHidden(true)
                 Spacer()
                 Button {
-                    engine.isMuted.toggle()
+                    guard let client = currentClient else { return }
+                    Task {
+                        try? await rpcClient.setClientVolume(
+                            clientId: client.id,
+                            volume: ClientVolume(percent: volume.percent, muted: !volume.muted)
+                        )
+                        await rpcClient.refreshStatus()
+                    }
                 } label: {
-                    Image(systemName: engine.isMuted ? "speaker.slash.fill" : "speaker.fill")
+                    Image(systemName: volume.muted ? "speaker.slash.fill" : "speaker.fill")
                 }
                 .buttonStyle(.bordered)
-                .accessibilityLabel(engine.isMuted ? "Unmute" : "Mute")
+                .accessibilityLabel(volume.muted ? "Unmute" : "Mute")
+                .disabled(currentClient == nil)
             }
         }
         .padding(.horizontal)
-    }
-
-    private var volumeBinding: Binding<Double> {
-        Binding(
-            get: { Double(engine.volume) },
-            set: { engine.volume = Int($0) }
-        )
+        .disabled(currentClient == nil)
     }
 
     private var controlButtons: some View {
