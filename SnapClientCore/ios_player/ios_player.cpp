@@ -121,6 +121,16 @@ void IOSPlayer::resume()
 
 void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRef)
 {
+    char* buffer = (char*)bufferRef->mAudioData;
+
+    // If paused, output silence instead of actual audio
+    if (g_ios_player_paused.load())
+    {
+        memset(buffer, 0, bufferRef->mAudioDataByteSize);
+        AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
+        return;
+    }
+
     // Estimate the playout delay by checking the number of frames left in the buffer
     // and add ms_ (= complete buffer size). Based on trying.
     AudioTimeStamp timestamp;
@@ -131,7 +141,6 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     bufferedMs += 15;
 
     chronos::usec delay(bufferedMs * 1000);
-    char* buffer = (char*)bufferRef->mAudioData;
     if (!pubStream_->getPlayerChunkOrSilence(buffer, delay, frames_))
     {
         if (chronos::getTickCount() - lastChunkTick > 5000)
