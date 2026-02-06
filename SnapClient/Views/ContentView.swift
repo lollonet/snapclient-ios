@@ -35,6 +35,8 @@ struct PlayerView: View {
 
     @State private var volumeSlider: Double = 100
     @State private var isEditingVolume = false
+    @State private var rpcError: String?
+    @State private var showRPCError = false
 
     /// Our unique client ID (matches what engine sets)
     private var myClientId: String {
@@ -79,7 +81,7 @@ struct PlayerView: View {
                     HStack {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.yellow)
-                        Text("AirPlay attivo - possibile loop audio")
+                        Text("AirPlay active - possible audio loop")
                             .font(.caption)
                         Spacer()
                         Toggle("", isOn: $engine.forceLocalSpeaker)
@@ -109,6 +111,11 @@ struct PlayerView: View {
             .navigationTitle("SnapForge")
             .onAppear {
                 discovery.startBrowsing()
+            }
+            .alert("Error", isPresented: $showRPCError) {
+                Button("OK") { }
+            } message: {
+                Text(rpcError ?? "Unknown error")
             }
         }
     }
@@ -251,11 +258,16 @@ struct PlayerView: View {
                     isEditingVolume = editing
                     if !editing, let client = currentClient {
                         Task {
-                            try? await rpcClient.setClientVolume(
-                                clientId: client.id,
-                                volume: ClientVolume(percent: Int(volumeSlider), muted: serverMuted)
-                            )
-                            await rpcClient.refreshStatus()
+                            do {
+                                try await rpcClient.setClientVolume(
+                                    clientId: client.id,
+                                    volume: ClientVolume(percent: Int(volumeSlider), muted: serverMuted)
+                                )
+                                await rpcClient.refreshStatus()
+                            } catch {
+                                rpcError = error.localizedDescription
+                                showRPCError = true
+                            }
                         }
                     }
                 }
@@ -282,11 +294,16 @@ struct PlayerView: View {
                 Button {
                     guard let client = currentClient else { return }
                     Task {
-                        try? await rpcClient.setClientVolume(
-                            clientId: client.id,
-                            volume: ClientVolume(percent: serverVolume, muted: !serverMuted)
-                        )
-                        await rpcClient.refreshStatus()
+                        do {
+                            try await rpcClient.setClientVolume(
+                                clientId: client.id,
+                                volume: ClientVolume(percent: serverVolume, muted: !serverMuted)
+                            )
+                            await rpcClient.refreshStatus()
+                        } catch {
+                            rpcError = error.localizedDescription
+                            showRPCError = true
+                        }
                     }
                 } label: {
                     Image(systemName: serverMuted ? "speaker.slash.fill" : "speaker.fill")
@@ -416,6 +433,8 @@ struct GroupSection: View {
     @EnvironmentObject var rpcClient: SnapcastRPCClient
     @State private var groupVolume: Double = 100
     @State private var isEditingVolume = false
+    @State private var rpcError: String?
+    @State private var showRPCError = false
 
     /// Average volume of all connected clients in the group
     private var averageVolume: Int {
@@ -480,8 +499,13 @@ struct GroupSection: View {
 
                 Button {
                     Task {
-                        try? await rpcClient.setGroupMute(groupId: group.id, muted: !group.muted)
-                        await rpcClient.refreshStatus()
+                        do {
+                            try await rpcClient.setGroupMute(groupId: group.id, muted: !group.muted)
+                            await rpcClient.refreshStatus()
+                        } catch {
+                            rpcError = error.localizedDescription
+                            showRPCError = true
+                        }
                     }
                 } label: {
                     Image(systemName: group.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
@@ -490,17 +514,31 @@ struct GroupSection: View {
                 .buttonStyle(.plain)
             }
         }
+        .alert("Error", isPresented: $showRPCError) {
+            Button("OK") { }
+        } message: {
+            Text(rpcError ?? "Unknown error")
+        }
     }
 
     private func setAllClientsVolume(_ volume: Int) {
         Task {
+            var errors: [String] = []
             for client in group.clients where client.connected {
-                try? await rpcClient.setClientVolume(
-                    clientId: client.id,
-                    volume: ClientVolume(percent: volume, muted: client.config.volume.muted)
-                )
+                do {
+                    try await rpcClient.setClientVolume(
+                        clientId: client.id,
+                        volume: ClientVolume(percent: volume, muted: client.config.volume.muted)
+                    )
+                } catch {
+                    errors.append("\(client.config.name.isEmpty ? client.id : client.config.name): \(error.localizedDescription)")
+                }
             }
             await rpcClient.refreshStatus()
+            if !errors.isEmpty {
+                rpcError = errors.joined(separator: "\n")
+                showRPCError = true
+            }
         }
     }
 }
@@ -512,6 +550,8 @@ struct ClientRow: View {
     @EnvironmentObject var rpcClient: SnapcastRPCClient
     @State private var sliderValue: Double = 0
     @State private var isEditing = false
+    @State private var rpcError: String?
+    @State private var showRPCError = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -545,11 +585,16 @@ struct ClientRow: View {
                 if !editing {
                     // Only send when user finishes dragging
                     Task {
-                        try? await rpcClient.setClientVolume(
-                            clientId: client.id,
-                            volume: ClientVolume(percent: Int(sliderValue), muted: client.config.volume.muted)
-                        )
-                        await rpcClient.refreshStatus()
+                        do {
+                            try await rpcClient.setClientVolume(
+                                clientId: client.id,
+                                volume: ClientVolume(percent: Int(sliderValue), muted: client.config.volume.muted)
+                            )
+                            await rpcClient.refreshStatus()
+                        } catch {
+                            rpcError = error.localizedDescription
+                            showRPCError = true
+                        }
                     }
                 }
             }
@@ -563,6 +608,11 @@ struct ClientRow: View {
             }
         }
         .padding(.vertical, 2)
+        .alert("Error", isPresented: $showRPCError) {
+            Button("OK") { }
+        } message: {
+            Text(rpcError ?? "Unknown error")
+        }
     }
 }
 
