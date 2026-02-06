@@ -534,7 +534,10 @@ struct GroupSection: View {
                     errors.append("\(client.config.name.isEmpty ? client.id : client.config.name): \(error.localizedDescription)")
                 }
             }
-            await rpcClient.refreshStatus()
+            // Only refresh if at least one volume change succeeded
+            if errors.count < group.clients.filter(\.connected).count {
+                await rpcClient.refreshStatus()
+            }
             if !errors.isEmpty {
                 rpcError = errors.joined(separator: "\n")
                 showRPCError = true

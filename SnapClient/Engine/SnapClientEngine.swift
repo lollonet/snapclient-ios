@@ -325,9 +325,8 @@ final class SnapClientEngine: ObservableObject {
             audioSessionError = nil
             log.info("Audio session configured: sampleRate=\(session.sampleRate), ioBuffer=\(session.ioBufferDuration * 1000)ms")
         } catch {
-            let errorMsg = "Audio session setup failed: \(error.localizedDescription)"
-            log.error("\(errorMsg)")
-            audioSessionError = errorMsg
+            log.error("Audio session setup failed: \(error.localizedDescription)")
+            audioSessionError = error.localizedDescription
         }
     }
 

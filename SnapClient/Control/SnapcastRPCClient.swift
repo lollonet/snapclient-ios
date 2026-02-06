@@ -4,7 +4,10 @@ import Foundation
 
 /// Snapcast client volume.
 struct ClientVolume: Codable, Sendable {
-    var percent: Int
+    /// Volume percentage (always clamped to 0-100).
+    var percent: Int {
+        didSet { percent = max(0, min(100, percent)) }
+    }
     var muted: Bool
 
     /// Create a volume with validated percent (clamped to 0-100).
