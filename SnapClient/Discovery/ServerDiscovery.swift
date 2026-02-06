@@ -131,8 +131,10 @@ final class ServerDiscovery: ObservableObject {
                         switch host {
                         case .ipv4(let addr):
                             // Convert raw bytes to dotted decimal string
-                            let bytes = addr.rawValue
-                            hostString = "\(bytes[0]).\(bytes[1]).\(bytes[2]).\(bytes[3])"
+                            // Must convert Data to [UInt8] for correct subscripting
+                            let bytes = [UInt8](addr.rawValue)
+                            hostString = String(format: "%d.%d.%d.%d",
+                                bytes[0], bytes[1], bytes[2], bytes[3])
                             print("[Discovery] IPv4: \(hostString)")
                         case .ipv6(let addr):
                             // For IPv6, use description but strip %interface suffix
