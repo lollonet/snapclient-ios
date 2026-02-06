@@ -9,27 +9,7 @@
  #include <mach/clock.h>
  #include <mach/mach.h>
  #endif
-@@ -82,9 +82,18 @@
-
- inline static void steadytimeofday(struct timeval* tv)
- {
--#ifndef WINDOWS
-+#if defined(IOS)
-+    // On iOS, use Mach clock for consistent monotonic time
-+    clock_serv_t cclock;
-+    mach_timespec_t mts;
-+    host_get_clock_service(mach_host_self(), SYSTEM_CLOCK, &cclock);
-+    clock_get_time(cclock, &mts);
-+    mach_port_deallocate(mach_task_self(), cclock);
-+    tv->tv_sec = mts.tv_sec;
-+    tv->tv_usec = static_cast<long>(mts.tv_nsec / 1000);
-+#elif !defined(WINDOWS)
-     timeofday<clk>(tv);
- #else
-     gettimeofday(tv, NULL);
- #endif
- }
-@@ -111,7 +120,7 @@
+@@ -111,7 +111,7 @@
 
  inline static long getTickCount()
  {
