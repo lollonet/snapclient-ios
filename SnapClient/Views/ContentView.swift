@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @EnvironmentObject var engine: SnapClientEngine
@@ -35,20 +36,47 @@ struct PlayerView: View {
     @State private var volumeSlider: Double = 100
     @State private var isEditingVolume = false
 
-    /// Find our client in the server status (matches on host_id containing "SnapForge")
+    /// Our unique client ID (matches what engine sets)
+    private var myClientId: String {
+        let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? ""
+        return "SnapForge-\(vendorId.prefix(8))"
+    }
+
+    /// Find our client in the server status by matching our unique ID.
     private var currentClient: SnapcastClient? {
-        rpcClient.serverStatus?.allClients.first { client in
-            // Match by name containing SnapForge or by connected host IP
-            let nameMatch = client.config.name.contains("SnapForge") ||
-                            client.host?.name?.contains("SnapForge") ?? false
-            let ipMatch = client.host?.ip == engine.connectedHost
-            return nameMatch || ipMatch
+        guard let clients = rpcClient.serverStatus?.allClients else { return nil }
+        return clients.first { $0.id == myClientId }
+    }
+
+    /// Server-side volume for our client (for change observation)
+    private var serverVolume: Int {
+        currentClient?.config.volume.percent ?? 100
+    }
+
+    /// Server-side mute state for our client
+    private var serverMuted: Bool {
+        currentClient?.config.volume.muted ?? false
+    }
+
+    /// Current stream (for now playing info)
+    private var currentStream: SnapcastStream? {
+        guard let status = rpcClient.serverStatus,
+              let client = currentClient else { return nil }
+        // Find the group containing our client, then get its stream
+        for group in status.groups {
+            if group.clients.contains(where: { $0.id == client.id }) {
+                return status.streams.first { $0.id == group.stream_id }
+            }
         }
+        return nil
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 32) {
+            VStack(spacing: 24) {
+                // Now playing info at top
+                nowPlayingSection
+
                 Spacer()
 
                 // Status indicator
@@ -70,6 +98,46 @@ struct PlayerView: View {
         }
     }
 
+    private var nowPlayingSection: some View {
+        Group {
+            if let stream = currentStream,
+               let meta = stream.properties?.metadata,
+               meta.title != nil || meta.artist != nil {
+                VStack(spacing: 4) {
+                    if let title = meta.title {
+                        Text(title)
+                            .font(.headline)
+                            .lineLimit(1)
+                    }
+                    if let artist = meta.artist {
+                        Text(artist)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if let album = meta.album {
+                        Text(album)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Text(stream.id)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
+    /// Server hostname from discovery
+    private var serverHostname: String? {
+        guard let host = engine.connectedHost else { return nil }
+        return discovery.servers.first { $0.host == host }?.displayName
+    }
+
     private var statusView: some View {
         VStack(spacing: 8) {
             Image(systemName: engine.state.isActive ? "speaker.wave.3.fill" : "speaker.slash")
@@ -82,10 +150,42 @@ struct PlayerView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
+            // Server info: FQDN and IP
             if let host = engine.connectedHost {
-                Text(host)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                VStack(spacing: 2) {
+                    if let hostname = serverHostname {
+                        Text(hostname)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(host)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            // Client info
+            if engine.state.isActive {
+                VStack(spacing: 4) {
+                    Divider().frame(width: 100)
+                    if let client = currentClient {
+                        Text("Client ID: \(client.id)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if !client.config.name.isEmpty {
+                            Text("Name: \(client.config.name)")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    } else {
+                        Text("Client ID: \(myClientId)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("(not found on server)")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -93,9 +193,7 @@ struct PlayerView: View {
     }
 
     private var volumeSection: some View {
-        let volume = currentClient?.config.volume ?? ClientVolume(percent: 100, muted: false)
-
-        return VStack(spacing: 8) {
+        VStack(spacing: 8) {
             HStack {
                 Image(systemName: "speaker.fill")
                     .foregroundStyle(.secondary)
@@ -110,7 +208,7 @@ struct PlayerView: View {
                         Task {
                             try? await rpcClient.setClientVolume(
                                 clientId: client.id,
-                                volume: ClientVolume(percent: Int(volumeSlider), muted: volume.muted)
+                                volume: ClientVolume(percent: Int(volumeSlider), muted: serverMuted)
                             )
                             await rpcClient.refreshStatus()
                         }
@@ -123,9 +221,9 @@ struct PlayerView: View {
                     .accessibilityHidden(true)
             }
             .onAppear {
-                volumeSlider = Double(volume.percent)
+                volumeSlider = Double(serverVolume)
             }
-            .onChange(of: volume.percent) { _, newValue in
+            .onChange(of: serverVolume) { _, newValue in
                 if !isEditingVolume {
                     volumeSlider = Double(newValue)
                 }
@@ -142,15 +240,15 @@ struct PlayerView: View {
                     Task {
                         try? await rpcClient.setClientVolume(
                             clientId: client.id,
-                            volume: ClientVolume(percent: volume.percent, muted: !volume.muted)
+                            volume: ClientVolume(percent: serverVolume, muted: !serverMuted)
                         )
                         await rpcClient.refreshStatus()
                     }
                 } label: {
-                    Image(systemName: volume.muted ? "speaker.slash.fill" : "speaker.fill")
+                    Image(systemName: serverMuted ? "speaker.slash.fill" : "speaker.fill")
                 }
                 .buttonStyle(.bordered)
-                .accessibilityLabel(volume.muted ? "Unmute" : "Mute")
+                .accessibilityLabel(serverMuted ? "Unmute" : "Mute")
                 .disabled(currentClient == nil)
             }
         }

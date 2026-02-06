@@ -68,6 +68,27 @@ struct SnapcastStream: Codable, Identifiable, Sendable {
             case artist, title, album
             case artUrl = "artUrl"
         }
+
+        // Custom decoder to handle fields that can be String or [String]
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            artist = Self.decodeStringOrArray(container, key: .artist)
+            title = Self.decodeStringOrArray(container, key: .title)
+            album = Self.decodeStringOrArray(container, key: .album)
+            artUrl = try container.decodeIfPresent(String.self, forKey: .artUrl)
+        }
+
+        private static func decodeStringOrArray(_ container: KeyedDecodingContainer<CodingKeys>, key: CodingKeys) -> String? {
+            // Try String first
+            if let value = try? container.decode(String.self, forKey: key) {
+                return value
+            }
+            // Try [String] and join
+            if let values = try? container.decode([String].self, forKey: key) {
+                return values.joined(separator: ", ")
+            }
+            return nil
+        }
     }
 }
 
@@ -131,7 +152,12 @@ final class SnapcastRPCClient: ObservableObject {
     func connect(host: String, port: Int = 1780) {
         disconnect()
 
-        guard let url = URL(string: "ws://\(host):\(port)/jsonrpc") else { return }
+        let urlString = "ws://\(host):\(port)/jsonrpc"
+        print("[RPC] connecting to \(urlString)")
+        guard let url = URL(string: urlString) else {
+            print("[RPC] invalid URL")
+            return
+        }
 
         session = URLSession(configuration: .default)
         webSocket = session?.webSocketTask(with: url)
@@ -171,8 +197,9 @@ final class SnapcastRPCClient: ObservableObject {
                 params: nil
             )
             serverStatus = result.server
+            print("[RPC] refreshStatus: \(result.server.groups.count) groups, \(result.server.allClients.count) clients")
         } catch {
-            // Connection error — will be reflected in isConnected
+            print("[RPC] refreshStatus error: \(error)")
         }
     }
 
@@ -289,6 +316,11 @@ final class SnapcastRPCClient: ObservableObject {
             }
         }
 
+        // Debug: print raw response
+        if let rawString = String(data: responseData, encoding: .utf8) {
+            print("[RPC] raw response (\(responseData.count) bytes): \(rawString.prefix(500))...")
+        }
+
         let response = try decoder.decode(RPCResponse<T>.self, from: responseData)
         if let error = response.error {
             throw NSError(domain: "SnapcastRPC", code: error.code,
@@ -304,20 +336,26 @@ final class SnapcastRPCClient: ObservableObject {
     private func startReceiving() {
         receiveTask = Task { [weak self] in
             guard let self else { return }
+            print("[RPC] startReceiving loop started")
             while !Task.isCancelled {
                 do {
-                    guard let webSocket = await MainActor.run(body: { self.webSocket }) else { break }
+                    guard let webSocket = await MainActor.run(body: { self.webSocket }) else {
+                        print("[RPC] webSocket is nil, exiting receive loop")
+                        break
+                    }
                     let message = try await webSocket.receive()
                     await MainActor.run {
                         self.handleMessage(message)
                     }
                 } catch {
+                    print("[RPC] receive error: \(error)")
                     await MainActor.run {
                         self.isConnected = false
                     }
                     break
                 }
             }
+            print("[RPC] receive loop ended")
         }
     }
 

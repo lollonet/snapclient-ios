@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AVFoundation
+import UIKit
 import os.log
 
 /// Connection state of the Snapcast client engine.
@@ -102,6 +103,12 @@ final class SnapClientEngine: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Unique client ID based on device vendor identifier
+    private static var uniqueClientId: String {
+        let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        return "SnapForge-\(vendorId.prefix(8))"
+    }
+
     init() {
         let id = instanceId  // capture before self is fully initialized
         log.info("SnapClientEngine[\(id)] init")
@@ -109,10 +116,15 @@ final class SnapClientEngine: ObservableObject {
         guard clientRef != nil else {
             fatalError("Failed to create snapclient instance")
         }
+
+        // Set unique client ID before registering callbacks
+        let clientId = Self.uniqueClientId
+        setName(clientId)
+
         registerCallbacks()
         registerLogCallback()
         setupAudioSessionObservers()
-        log.info("SnapClientEngine[\(id)] ready, core version: \(snapclient_version().map(String.init(cString:)) ?? "?")")
+        log.info("SnapClientEngine[\(id)] ready, clientId=\(clientId), core version: \(snapclient_version().map(String.init(cString:)) ?? "?")")
     }
 
     deinit {
