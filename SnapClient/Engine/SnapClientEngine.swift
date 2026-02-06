@@ -137,6 +137,10 @@ final class SnapClientEngine: ObservableObject {
         registerCallbacks()
         registerLogCallback()
         setupAudioSessionObservers()
+
+        // Sync pause state with C++ bridge
+        isPaused = snapclient_is_paused(clientRef)
+
         log.info("SnapClientEngine[\(id)] ready, clientId=\(clientId), core version: \(snapclient_version().map(String.init(cString:)) ?? "?")")
     }
 
@@ -220,7 +224,7 @@ final class SnapClientEngine: ObservableObject {
         guard let ref = clientRef else { return }
         log.info("pause: pausing audio playback")
         snapclient_pause(ref)
-        isPaused = true
+        isPaused = snapclient_is_paused(ref)  // Query actual state
     }
 
     /// Resume audio playback after a pause.
@@ -228,7 +232,7 @@ final class SnapClientEngine: ObservableObject {
         guard let ref = clientRef else { return }
         log.info("resume: resuming audio playback")
         snapclient_resume(ref)
-        isPaused = false
+        isPaused = snapclient_is_paused(ref)  // Query actual state
     }
 
     /// Toggle pause/resume state.

@@ -60,7 +60,7 @@ public:
     void resume();
 
     /// @return true if audio is paused
-    bool isPaused() const { return paused_; }
+    bool isPaused() const { return g_ios_player_paused.load(); }
 
 protected:
     void worker() override;
@@ -77,7 +77,6 @@ private:
     AudioQueueTimelineRef timeLine_;
     std::shared_ptr<Stream> pubStream_;
     uint64_t lastChunkTick{0};
-    std::atomic<bool> paused_{false};
 };
 
 } // namespace player

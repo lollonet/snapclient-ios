@@ -64,7 +64,6 @@ std::vector<PcmDevice> IOSPlayer::pcm_list()
 void IOSPlayer::pause()
 {
     LOG(INFO, LOG_TAG) << "Pausing audio playback\n";
-    paused_.store(true);
     g_ios_player_paused.store(true);
     if (queue_)
     {
@@ -76,7 +75,6 @@ void IOSPlayer::pause()
 void IOSPlayer::resume()
 {
     LOG(INFO, LOG_TAG) << "Resuming audio playback\n";
-    paused_.store(false);
     g_ios_player_paused.store(false);
     if (queue_)
     {
@@ -200,8 +198,8 @@ bool IOSPlayer::initAudioQueue()
     }
 
     LOG(DEBUG, LOG_TAG) << "IOSPlayer::initAudioQueue starting\n";
-    // Start in paused state if already paused
-    if (!paused_.load())
+    // Start in paused state if already paused (use global as source of truth)
+    if (!g_ios_player_paused.load())
     {
         status = AudioQueueStart(queue, NULL);
         if (status != noErr)
