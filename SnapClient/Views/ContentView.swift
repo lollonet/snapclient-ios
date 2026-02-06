@@ -576,6 +576,8 @@ struct ClientEditSheet: View {
     @State private var name: String = ""
     @State private var latency: String = ""
     @State private var selectedGroupId: String = ""
+    @State private var errorMessage: String?
+    @State private var showError = false
 
     var body: some View {
         NavigationStack {
@@ -621,9 +623,14 @@ struct ClientEditSheet: View {
                 Section {
                     Button("Delete Client", role: .destructive) {
                         Task {
-                            try? await rpcClient.deleteClient(clientId: client.id)
-                            await rpcClient.refreshStatus()
-                            dismiss()
+                            do {
+                                try await rpcClient.deleteClient(clientId: client.id)
+                                await rpcClient.refreshStatus()
+                                dismiss()
+                            } catch {
+                                errorMessage = error.localizedDescription
+                                showError = true
+                            }
                         }
                     }
                     .disabled(client.connected)
@@ -644,30 +651,44 @@ struct ClientEditSheet: View {
                 latency = String(client.config.latency)
                 selectedGroupId = currentGroupId
             }
+            .alert("Error", isPresented: $showError) {
+                Button("OK") { showError = false }
+            } message: {
+                Text(errorMessage ?? "Unknown error")
+            }
         }
     }
 
     private func saveChanges() {
         Task {
-            // Save name if changed
-            if name != client.config.name {
-                try? await rpcClient.setClientName(clientId: client.id, name: name)
-            }
-            // Save latency if changed
-            if let newLatency = Int(latency), newLatency != client.config.latency {
-                try? await rpcClient.setClientLatency(clientId: client.id, latency: newLatency)
-            }
-            // Move to different group if changed
-            if selectedGroupId != currentGroupId {
-                // Get current clients in target group and add this one
-                if let targetGroup = rpcClient.serverStatus?.groups.first(where: { $0.id == selectedGroupId }) {
-                    var clientIds = targetGroup.clients.map(\.id)
-                    clientIds.append(client.id)
-                    try? await rpcClient.setGroupClients(groupId: selectedGroupId, clientIds: clientIds)
+            do {
+                // Save name if changed
+                if name != client.config.name {
+                    print("[ClientEdit] setClientName: clientId=\(client.id), name=\(name)")
+                    try await rpcClient.setClientName(clientId: client.id, name: name)
                 }
+                // Save latency if changed
+                if let newLatency = Int(latency), newLatency != client.config.latency {
+                    print("[ClientEdit] setClientLatency: clientId=\(client.id), latency=\(newLatency)")
+                    try await rpcClient.setClientLatency(clientId: client.id, latency: newLatency)
+                }
+                // Move to different group if changed
+                if selectedGroupId != currentGroupId {
+                    // Get current clients in target group and add this one
+                    if let targetGroup = rpcClient.serverStatus?.groups.first(where: { $0.id == selectedGroupId }) {
+                        var clientIds = targetGroup.clients.map(\.id)
+                        clientIds.append(client.id)
+                        print("[ClientEdit] setGroupClients: groupId=\(selectedGroupId), clientIds=\(clientIds)")
+                        try await rpcClient.setGroupClients(groupId: selectedGroupId, clientIds: clientIds)
+                    }
+                }
+                await rpcClient.refreshStatus()
+                dismiss()
+            } catch {
+                print("[ClientEdit] error: \(error.localizedDescription)")
+                errorMessage = error.localizedDescription
+                showError = true
             }
-            await rpcClient.refreshStatus()
-            dismiss()
         }
     }
 }
@@ -678,6 +699,8 @@ struct GroupEditSheet: View {
     @EnvironmentObject var rpcClient: SnapcastRPCClient
     @State private var name: String = ""
     @State private var selectedStreamId: String = ""
+    @State private var errorMessage: String?
+    @State private var showError = false
 
     var body: some View {
         NavigationStack {
@@ -732,21 +755,34 @@ struct GroupEditSheet: View {
                 name = group.name
                 selectedStreamId = group.stream_id
             }
+            .alert("Error", isPresented: $showError) {
+                Button("OK") { showError = false }
+            } message: {
+                Text(errorMessage ?? "Unknown error")
+            }
         }
     }
 
     private func saveChanges() {
         Task {
-            // Save name if changed
-            if name != group.name {
-                try? await rpcClient.setGroupName(groupId: group.id, name: name)
+            do {
+                // Save name if changed
+                if name != group.name {
+                    print("[GroupEdit] setGroupName: groupId=\(group.id), name=\(name)")
+                    try await rpcClient.setGroupName(groupId: group.id, name: name)
+                }
+                // Save stream if changed
+                if selectedStreamId != group.stream_id {
+                    print("[GroupEdit] setGroupStream: groupId=\(group.id), streamId=\(selectedStreamId)")
+                    try await rpcClient.setGroupStream(groupId: group.id, streamId: selectedStreamId)
+                }
+                await rpcClient.refreshStatus()
+                dismiss()
+            } catch {
+                print("[GroupEdit] error: \(error.localizedDescription)")
+                errorMessage = error.localizedDescription
+                showError = true
             }
-            // Save stream if changed
-            if selectedStreamId != group.stream_id {
-                try? await rpcClient.setGroupStream(groupId: group.id, streamId: selectedStreamId)
-            }
-            await rpcClient.refreshStatus()
-            dismiss()
         }
     }
 }
