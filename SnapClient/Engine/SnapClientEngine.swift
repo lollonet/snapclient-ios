@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 import AVFoundation
+import UIKit
+import os.log
 
 /// Connection state of the Snapcast client engine.
 enum SnapClientState: Int, Sendable {
@@ -22,6 +24,8 @@ enum SnapClientState: Int, Sendable {
         self == .connected || self == .playing
     }
 }
+
+private let log = Logger(subsystem: "com.snapforge.snapclient", category: "Engine")
 
 /// Swift wrapper around the snapclient C++ core via the C bridge.
 ///
@@ -46,11 +50,15 @@ final class SnapClientEngine: ObservableObject {
     @Published var latencyMs: Int = 0 {
         didSet { applyLatency() }
     }
+    @Published private(set) var isPaused: Bool = false
 
     // MARK: - Server info
 
     @Published private(set) var connectedHost: String?
     @Published private(set) var connectedPort: Int?
+
+    /// Bridge log messages forwarded from C++ (most recent first).
+    @Published private(set) var bridgeLogs: [String] = []
 
     /// Last successfully connected server (persisted).
     var lastServer: (host: String, port: Int)? {
@@ -77,6 +85,18 @@ final class SnapClientEngine: ObservableObject {
     /// Enable automatic reconnection on disconnection.
     @Published var autoReconnect: Bool = true
 
+    /// Force audio to local speaker (prevents AirPlay loop).
+    @Published var forceLocalSpeaker: Bool = false {
+        didSet {
+            if state.isActive {
+                configureAudioSession() // Re-apply
+            }
+        }
+    }
+
+    /// Warning: AirPlay output detected (potential loop).
+    @Published private(set) var airPlayLoopWarning: Bool = false
+
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
@@ -88,15 +108,40 @@ final class SnapClientEngine: ObservableObject {
     private let maxReconnectDelay: TimeInterval = 60.0
     private let baseReconnectDelay: TimeInterval = 2.0
 
+    // Keep a max number of log lines
+    private let maxLogLines = 200
+
+    // Unique instance ID for debugging
+    private let instanceId = UUID().uuidString.prefix(8)
+
     // MARK: - Lifecycle
 
+    /// Unique client ID based on device vendor identifier
+    private static var uniqueClientId: String {
+        let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        return "SnapForge-\(vendorId.prefix(8))"
+    }
+
     init() {
+        let id = instanceId  // capture before self is fully initialized
+        log.info("SnapClientEngine[\(id)] init")
         clientRef = snapclient_create()
         guard clientRef != nil else {
             fatalError("Failed to create snapclient instance")
         }
+
+        // Set unique client ID before registering callbacks
+        let clientId = Self.uniqueClientId
+        setName(clientId)
+
         registerCallbacks()
+        registerLogCallback()
         setupAudioSessionObservers()
+
+        // Sync pause state with C++ bridge
+        isPaused = snapclient_is_paused(clientRef)
+
+        log.info("SnapClientEngine[\(id)] ready, clientId=\(clientId), core version: \(snapclient_version().map(String.init(cString:)) ?? "?")")
     }
 
     deinit {
@@ -107,6 +152,9 @@ final class SnapClientEngine: ObservableObject {
         if let observer = interruptionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+
+        // Unregister log callback
+        snapclient_set_log_callback(nil, nil)
 
         // Must be called from any context, so we capture the ref
         let ref = clientRef
@@ -123,14 +171,20 @@ final class SnapClientEngine: ObservableObject {
 
     /// Connect to a Snapserver and start audio playback.
     func start(host: String, port: Int = 1704) {
-        guard let ref = clientRef else { return }
+        guard let ref = clientRef else {
+            log.error("[\(self.instanceId)] start: clientRef is nil!")
+            return
+        }
 
-        // Configure audio session for background playback
-        snapclient_configure_audio_session()
+        // Debug: log raw bytes of host string
+        let hostBytes = Array(host.utf8)
+        log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
+        configureAudioSession()
 
         let success = host.withCString { cHost in
             snapclient_start(ref, cHost, Int32(port))
         }
+        log.info("[\(self.instanceId)] snapclient_start returned \(success)")
 
         if success {
             connectedHost = host
@@ -148,6 +202,7 @@ final class SnapClientEngine: ObservableObject {
     /// Disconnect from the server.
     func stop() {
         guard let ref = clientRef else { return }
+        log.info("stop: calling snapclient_stop")
         snapclient_stop(ref)
         connectedHost = nil
         connectedPort = nil
@@ -156,8 +211,37 @@ final class SnapClientEngine: ObservableObject {
     /// Reconnect to the last server.
     func reconnect() {
         guard let host = connectedHost, let port = connectedPort else { return }
+        log.info("reconnect: \(host):\(port)")
         stop()
         start(host: host, port: port)
+    }
+
+    // MARK: - Playback Control
+
+    /// Pause audio playback while keeping the connection alive.
+    /// The client continues to receive audio data and sync with the server.
+    func pause() {
+        guard let ref = clientRef else { return }
+        log.info("pause: pausing audio playback")
+        snapclient_pause(ref)
+        isPaused = snapclient_is_paused(ref)  // Query actual state
+    }
+
+    /// Resume audio playback after a pause.
+    func resume() {
+        guard let ref = clientRef else { return }
+        log.info("resume: resuming audio playback")
+        snapclient_resume(ref)
+        isPaused = snapclient_is_paused(ref)  // Query actual state
+    }
+
+    /// Toggle pause/resume state.
+    func togglePlayback() {
+        if isPaused {
+            resume()
+        } else {
+            pause()
+        }
     }
 
     // MARK: - Identity
@@ -186,7 +270,58 @@ final class SnapClientEngine: ObservableObject {
         Int(snapclient_protocol_version())
     }
 
+    /// Test raw TCP connection (bypasses Snapcast protocol).
+    /// Returns 0 on success, errno on failure. Check bridgeLogs for details.
+    func testTCP(host: String, port: Int = 1704) -> Int32 {
+        log.info("testTCP: \(host):\(port)")
+        return host.withCString { cHost in
+            snapclient_test_tcp(cHost, Int32(port))
+        }
+    }
+
     // MARK: - Private helpers
+
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            // Use playback category for background audio
+            // .duckOthers: reduce volume of other apps instead of mixing
+            // .overrideMutedMicrophoneInterruption: don't interrupt for muted mic
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            // Request larger IO buffer for more stable playback
+            try session.setPreferredIOBufferDuration(0.01) // 10ms
+
+            // Force output to speaker to avoid AirPlay loop
+            // (when Tidal sends to Snapserver via AirPlay, we don't want our output going back)
+            if forceLocalSpeaker {
+                try session.overrideOutputAudioPort(.speaker)
+                log.info("Audio forced to local speaker (loop prevention)")
+            }
+
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+            // Check for AirPlay output and warn
+            checkForAirPlayLoop()
+
+            log.info("Audio session configured: sampleRate=\(session.sampleRate), ioBuffer=\(session.ioBufferDuration * 1000)ms")
+        } catch {
+            log.error("Audio session setup failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Check if audio is routing to AirPlay (potential loop)
+    private func checkForAirPlayLoop() {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs
+        let hasAirPlay = outputs.contains { $0.portType == .airPlay }
+
+        if hasAirPlay {
+            log.warning("Audio routing to AirPlay detected - may cause loop if Snapserver receives from AirPlay")
+            airPlayLoopWarning = true
+        } else {
+            airPlayLoopWarning = false
+        }
+    }
 
     private func applyVolume() {
         guard let ref = clientRef else { return }
@@ -232,9 +367,37 @@ final class SnapClientEngine: ObservableObject {
         }, stateCtx)
     }
 
+    private func registerLogCallback() {
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        snapclient_set_log_callback({ ctx, level, msg in
+            guard let ctx, let msg else { return }
+            let engine = Unmanaged<SnapClientEngine>.fromOpaque(ctx)
+                .takeUnretainedValue()
+            let message = String(cString: msg)
+            let prefix: String
+            switch level {
+            case SNAPCLIENT_LOG_DEBUG:   prefix = "[D]"
+            case SNAPCLIENT_LOG_INFO:    prefix = "[I]"
+            case SNAPCLIENT_LOG_WARNING: prefix = "[W]"
+            case SNAPCLIENT_LOG_ERROR:   prefix = "[E]"
+            default:                     prefix = "[?]"
+            }
+            let line = "\(prefix) \(message)"
+            // Also print to stdout for Xcode console
+            print("[SnapBridge] \(line)")
+            Task { @MainActor in
+                engine.bridgeLogs.insert(line, at: 0)
+                if engine.bridgeLogs.count > engine.maxLogLines {
+                    engine.bridgeLogs.removeLast()
+                }
+            }
+        }, ctx)
+    }
+
     private func handleStateChange(_ newState: SnapClientState) {
         let oldState = state
         state = newState
+        log.info("state: \(oldState.displayName) -> \(newState.displayName)")
 
         // Reset reconnect attempts on successful connection
         if newState == .connected || newState == .playing {
@@ -244,6 +407,7 @@ final class SnapClientEngine: ObservableObject {
         // Auto-reconnect if we were connected and got disconnected unexpectedly
         if oldState.isActive && newState == .disconnected &&
            autoReconnect && connectedHost != nil {
+            log.info("scheduling auto-reconnect (attempt \(self.reconnectAttempts + 1))")
             scheduleReconnect()
         }
     }
@@ -292,15 +456,14 @@ final class SnapClientEngine: ObservableObject {
 
         switch type {
         case .began:
-            // Audio interrupted (phone call, Siri, etc.)
-            // The C++ core should handle this, but we track state
+            log.info("Audio interrupted")
             break
         case .ended:
             // Interruption ended — check if we should resume
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) && connectedHost != nil {
-                    // Re-activate audio session and reconnect
+                    log.info("Audio interruption ended, resuming")
                     try? AVAudioSession.sharedInstance().setActive(true)
                     reconnect()
                 }

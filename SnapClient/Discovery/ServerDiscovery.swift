@@ -126,16 +126,37 @@ final class ServerDiscovery: ObservableObject {
                     if let innerEndpoint = conn.currentPath?.remoteEndpoint,
                        case let .hostPort(host, port) = innerEndpoint {
                         // Extract clean IP/hostname string without interface suffix
+                        // NWEndpoint.Host can include "%interface" suffix which breaks DNS
                         let hostString: String
                         switch host {
                         case .ipv4(let addr):
-                            hostString = "\(addr)"
+                            // Convert raw bytes to dotted decimal string
+                            // Must convert Data to [UInt8] for correct subscripting
+                            let bytes = [UInt8](addr.rawValue)
+                            hostString = String(format: "%d.%d.%d.%d",
+                                bytes[0], bytes[1], bytes[2], bytes[3])
+                            print("[Discovery] IPv4: \(hostString)")
                         case .ipv6(let addr):
-                            hostString = "\(addr)"
-                        case .name(let name, _):
-                            hostString = name
+                            // For IPv6, use description but strip %interface suffix
+                            let raw = "\(addr)"
+                            if let idx = raw.firstIndex(of: "%") {
+                                hostString = String(raw[..<idx])
+                            } else {
+                                hostString = raw
+                            }
+                            print("[Discovery] IPv6: \(hostString)")
+                        case .name(let hostname, _):
+                            hostString = hostname
+                            print("[Discovery] Name: \(hostname)")
                         @unknown default:
-                            hostString = "\(host)"
+                            // Strip %interface suffix if present
+                            let raw = "\(host)"
+                            if let idx = raw.firstIndex(of: "%") {
+                                hostString = String(raw[..<idx])
+                            } else {
+                                hostString = raw
+                            }
+                            print("[Discovery] Unknown: \(hostString)")
                         }
                         let server = DiscoveredServer(
                             id: serviceId,

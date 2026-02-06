@@ -1,0 +1,23 @@
+--- a/client/controller.cpp
++++ b/client/controller.cpp
+@@ -51,6 +51,9 @@
+ #ifdef HAS_COREAUDIO
+ #include "player/coreaudio_player.hpp"
+ #endif
++#ifdef HAS_IOS
++#include "ios_player.hpp"
++#endif
+ #ifdef HAS_WASAPI
+ #include "player/wasapi_player.hpp"
+ #endif
+@@ -268,6 +271,10 @@
+ #ifdef HAS_COREAUDIO
+             if (!player_)
+                 player_ = createPlayer<CoreAudioPlayer>(settings_.player, player::COREAUDIO);
++#endif
++#ifdef HAS_IOS
++            if (!player_)
++                player_ = createPlayer<IOSPlayer>(settings_.player, player::IOS_PLAYER);
+ #endif
+ #ifdef HAS_WASAPI
+             if (!player_)

@@ -12,6 +12,7 @@
 #include "client_settings.hpp"
 #include "controller.hpp"
 #include "common/aixlog.hpp"
+#include "ios_player.hpp"
 
 // Standard headers
 #include <atomic>
@@ -19,10 +20,66 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <cstdarg>
+#include <cstdio>
 
 // Boost.Asio
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/executor_work_guard.hpp>
+
+// iOS: use os_log directly (AixLog SinkNative falls back to syslog on iOS)
+#ifdef IOS
+#include <os/log.h>
+static os_log_t bridge_log() {
+    static os_log_t log = os_log_create("com.snapforge.snapclient", "Bridge");
+    return log;
+}
+#endif
+
+/* ── Log callback ──────────────────────────────────────────────── */
+
+static SnapClientLogCallback g_log_cb = nullptr;
+static void* g_log_ctx = nullptr;
+static std::mutex g_log_mutex;
+
+void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_cb = callback;
+    g_log_ctx = ctx;
+}
+
+/// Log to os_log + callback. Use this instead of LOG() in bridge code.
+static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+
+static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+#ifdef IOS
+    os_log_type_t type = OS_LOG_TYPE_DEFAULT;
+    switch (level) {
+        case SNAPCLIENT_LOG_DEBUG:   type = OS_LOG_TYPE_DEBUG; break;
+        case SNAPCLIENT_LOG_INFO:    type = OS_LOG_TYPE_INFO; break;
+        case SNAPCLIENT_LOG_WARNING: type = OS_LOG_TYPE_DEFAULT; break;
+        case SNAPCLIENT_LOG_ERROR:   type = OS_LOG_TYPE_ERROR; break;
+    }
+    os_log_with_type(bridge_log(), type, "%{public}s", buf);
+#endif
+
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if (g_log_cb) {
+        g_log_cb(g_log_ctx, level, buf);
+    }
+}
+
+#define BLOG_DEBUG(...)   bridge_log_msg(SNAPCLIENT_LOG_DEBUG, __VA_ARGS__)
+#define BLOG_INFO(...)    bridge_log_msg(SNAPCLIENT_LOG_INFO, __VA_ARGS__)
+#define BLOG_WARN(...)    bridge_log_msg(SNAPCLIENT_LOG_WARNING, __VA_ARGS__)
+#define BLOG_ERROR(...)   bridge_log_msg(SNAPCLIENT_LOG_ERROR, __VA_ARGS__)
 
 /* ── Internal state ─────────────────────────────────────────────── */
 
@@ -75,13 +132,14 @@ static void notify_state(SnapClient* c, SnapClientState new_state) {
 /* ── Lifecycle ──────────────────────────────────────────────────── */
 
 SnapClientRef snapclient_create(void) {
-    // Initialize logging (once)
+    // Initialize AixLog for Snapcast internals (uses syslog on iOS)
     static bool logging_initialized = false;
     if (!logging_initialized) {
-        AixLog::Log::init<AixLog::SinkNative>("snapclient", AixLog::Filter(AixLog::Severity::info));
+        AixLog::Log::init<AixLog::SinkNative>("snapclient", AixLog::Filter(AixLog::Severity::debug));
         logging_initialized = true;
     }
 
+    BLOG_INFO("snapclient_create: allocating client");
     return new (std::nothrow) SnapClient();
 }
 
@@ -104,34 +162,48 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 
     client->host = host;
     client->port = port;
+    BLOG_INFO("start: host=%s, port=%d", host, port);
     notify_state(client, SNAPCLIENT_STATE_CONNECTING);
 
     try {
         // Create io_context
         client->io_context = std::make_unique<boost::asio::io_context>();
         client->work_guard = std::make_unique<work_guard_t>(client->io_context->get_executor());
+        BLOG_INFO("io_context created");
 
         // Configure ClientSettings
         ClientSettings settings;
-        settings.server.uri = StreamUri("tcp://" + client->host + ":" + std::to_string(client->port));
-        settings.player.player_name = "ios";  // Use our iOS player
+        std::string uri_str = "tcp://" + client->host + ":" + std::to_string(client->port);
+        settings.server.uri = StreamUri(uri_str);
+        settings.player.player_name = player::IOS_PLAYER;
         settings.player.latency = client->latency_ms.load();
         settings.instance = client->instance;
         settings.host_id = client->name;
+        BLOG_INFO("settings: uri=%s, player=%s, host_id=%s, instance=%d",
+                  uri_str.c_str(), settings.player.player_name.c_str(),
+                  settings.host_id.c_str(), static_cast<int>(settings.instance));
 
         // Create Controller
         client->controller = std::make_unique<Controller>(*client->io_context, settings);
+        BLOG_INFO("Controller created");
 
-        // Start Controller (it will connect and set up everything)
+        // Start Controller — synchronous TCP connect + queues async hello/read
+        BLOG_INFO("calling controller->start()...");
         client->controller->start();
+        BLOG_INFO("controller->start() returned (TCP connected, async ops queued)");
 
         // Run io_context in background thread
         client->io_thread = std::thread([client]() {
+            BLOG_INFO("io_context thread started");
             try {
-                client->io_context->run();
+                auto n = client->io_context->run();
+                BLOG_INFO("io_context.run() returned, handlers executed: %lu",
+                          static_cast<unsigned long>(n));
             } catch (const std::exception& e) {
-                LOG(ERROR, "Bridge") << "io_context exception: " << e.what() << "\n";
+                BLOG_ERROR("io_context exception: %s", e.what());
             }
+            BLOG_INFO("io_context thread exiting (state=%d)",
+                      static_cast<int>(client->state.load()));
             // Only notify disconnected if we were previously connected
             // (avoids race with main thread's notify_state calls)
             if (client->state.load() != SNAPCLIENT_STATE_DISCONNECTED) {
@@ -141,10 +213,11 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 
         // Mark as connected (Controller will update to PLAYING when stream starts)
         notify_state(client, SNAPCLIENT_STATE_CONNECTED);
+        BLOG_INFO("connected, io_context running in background");
         return true;
 
     } catch (const std::exception& e) {
-        LOG(ERROR, "Bridge") << "Failed to start: " << e.what() << "\n";
+        BLOG_ERROR("failed to start: %s", e.what());
         // Cleanup on failure
         client->controller.reset();
         client->work_guard.reset();
@@ -214,6 +287,26 @@ bool snapclient_get_muted(SnapClientRef client) {
     return client ? client->muted.load() : false;
 }
 
+/* ── Playback control ───────────────────────────────────────────── */
+
+void snapclient_pause(SnapClientRef client) {
+    if (!client) return;
+    BLOG_INFO("pause: pausing audio playback");
+    player::g_ios_player_paused.store(true);
+}
+
+void snapclient_resume(SnapClientRef client) {
+    if (!client) return;
+    BLOG_INFO("resume: resuming audio playback");
+    player::g_ios_player_paused.store(false);
+}
+
+bool snapclient_is_paused(SnapClientRef client) {
+    // Use global player state as single source of truth
+    std::ignore = client;
+    return player::g_ios_player_paused.load();
+}
+
 /* ── Latency ────────────────────────────────────────────────────── */
 
 void snapclient_set_latency(SnapClientRef client, int latency_ms) {
@@ -266,42 +359,97 @@ void snapclient_set_settings_callback(SnapClientRef client,
 
 /* ── Audio session ──────────────────────────────────────────────── */
 
-#ifdef __OBJC__
-#import <AVFAudio/AVFAudio.h>
-#endif
-
 bool snapclient_configure_audio_session(void) {
-#ifdef __OBJC__
-    @autoreleasepool {
-        NSError* error = nil;
-        AVAudioSession* session = [AVAudioSession sharedInstance];
-
-        // Set category for playback
-        [session setCategory:AVAudioSessionCategoryPlayback
-                        mode:AVAudioSessionModeDefault
-                     options:AVAudioSessionCategoryOptionMixWithOthers
-                       error:&error];
-        if (error) {
-            LOG(ERROR, "Bridge") << "Failed to set audio category: "
-                                 << [[error localizedDescription] UTF8String] << "\n";
-            return false;
-        }
-
-        // Activate session
-        [session setActive:YES error:&error];
-        if (error) {
-            LOG(ERROR, "Bridge") << "Failed to activate audio session: "
-                                 << [[error localizedDescription] UTF8String] << "\n";
-            return false;
-        }
-
-        LOG(INFO, "Bridge") << "Audio session configured for playback\n";
-        return true;
-    }
-#else
-    // Non-Objective-C build - audio session must be configured from Swift
+    // Audio session must be configured from Swift on iOS
+    // (this file is compiled as C++, not Objective-C++)
+    BLOG_INFO("configure_audio_session: delegating to Swift");
     return true;
-#endif
+}
+
+/* ── Diagnostics ────────────────────────────────────────────────── */
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
+int snapclient_test_tcp(const char* host, int port) {
+    BLOG_INFO("test_tcp: connecting to %s:%d", host, port);
+
+    // Resolve hostname
+    struct addrinfo hints = {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    struct addrinfo* res = nullptr;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    int err = getaddrinfo(host, port_str, &hints, &res);
+    if (err != 0) {
+        BLOG_ERROR("test_tcp: getaddrinfo failed: %s", gai_strerror(err));
+        return err;
+    }
+    BLOG_INFO("test_tcp: resolved %s", host);
+
+    // Create socket
+    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sock < 0) {
+        int e = errno;
+        BLOG_ERROR("test_tcp: socket() failed: %s", strerror(e));
+        freeaddrinfo(res);
+        return e;
+    }
+    BLOG_INFO("test_tcp: socket created fd=%d", sock);
+
+    // Connect
+    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+        int e = errno;
+        BLOG_ERROR("test_tcp: connect() failed: %s", strerror(e));
+        close(sock);
+        freeaddrinfo(res);
+        return e;
+    }
+    BLOG_INFO("test_tcp: connected!");
+    freeaddrinfo(res);
+
+    // Send a simple test message (Snapcast base message header is 26 bytes)
+    // We'll send garbage - server will reject it but we'll see if bytes flow
+    const char test_msg[] = "SNAPTEST";
+    ssize_t sent = send(sock, test_msg, sizeof(test_msg), 0);
+    if (sent < 0) {
+        int e = errno;
+        BLOG_ERROR("test_tcp: send() failed: %s", strerror(e));
+        close(sock);
+        return e;
+    }
+    BLOG_INFO("test_tcp: sent %zd bytes", sent);
+
+    // Try to read response (with timeout)
+    struct timeval tv = {2, 0};  // 2 second timeout
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[256];
+    ssize_t rcvd = recv(sock, buf, sizeof(buf) - 1, 0);
+    if (rcvd < 0) {
+        int e = errno;
+        if (e == EAGAIN || e == EWOULDBLOCK) {
+            BLOG_INFO("test_tcp: recv timeout (server didn't respond in 2s)");
+        } else {
+            BLOG_ERROR("test_tcp: recv() failed: %s", strerror(e));
+        }
+    } else if (rcvd == 0) {
+        BLOG_INFO("test_tcp: server closed connection (expected - we sent garbage)");
+    } else {
+        BLOG_INFO("test_tcp: received %zd bytes", rcvd);
+    }
+
+    close(sock);
+    BLOG_INFO("test_tcp: done, connection works!");
+    return 0;
 }
 
 /* ── Version ────────────────────────────────────────────────────── */

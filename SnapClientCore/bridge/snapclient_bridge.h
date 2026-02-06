@@ -48,6 +48,19 @@ void snapclient_stop(SnapClientRef client);
 /// Returns true if the client is currently connected and playing.
 bool snapclient_is_connected(SnapClientRef client);
 
+/* ── Playback control ──────────────────────────────────────────────── */
+
+/// Pause audio playback while keeping the connection alive.
+/// The client continues to receive audio data and sync with the server,
+/// but audio output is silenced.
+void snapclient_pause(SnapClientRef client);
+
+/// Resume audio playback after a pause.
+void snapclient_resume(SnapClientRef client);
+
+/// Returns true if audio playback is currently paused.
+bool snapclient_is_paused(SnapClientRef client);
+
 /* ── Volume ─────────────────────────────────────────────────────── */
 
 /// Set playback volume (0–100).
@@ -114,12 +127,38 @@ void snapclient_set_settings_callback(SnapClientRef client,
                                       SnapClientSettingsCallback callback,
                                       void* ctx);
 
+/* ── Logging ────────────────────────────────────────────────────── */
+
+/// Log severity levels.
+typedef enum {
+    SNAPCLIENT_LOG_DEBUG   = 0,
+    SNAPCLIENT_LOG_INFO    = 1,
+    SNAPCLIENT_LOG_WARNING = 2,
+    SNAPCLIENT_LOG_ERROR   = 3,
+} SnapClientLogLevel;
+
+/// Callback invoked for each log message from the C++ core.
+/// @param ctx    User-provided context pointer.
+/// @param level  Log severity.
+/// @param msg    Null-terminated log message (UTF-8).
+typedef void (*SnapClientLogCallback)(void* ctx, SnapClientLogLevel level, const char* msg);
+
+/// Register a log callback to receive all bridge log messages.
+/// Pass NULL to unregister. Logs are also sent to os_log.
+void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx);
+
 /* ── Audio session (iOS-specific) ───────────────────────────────── */
 
 /// Configure the iOS audio session for background playback.
 /// Call this before snapclient_start().
 /// Returns true on success.
 bool snapclient_configure_audio_session(void);
+
+/* ── Diagnostics ────────────────────────────────────────────────── */
+
+/// Test raw TCP connection to host:port (bypasses Snapcast protocol).
+/// Returns 0 on success, or errno on failure. Logs details via log callback.
+int snapclient_test_tcp(const char* host, int port);
 
 /* ── Version info ───────────────────────────────────────────────── */
 

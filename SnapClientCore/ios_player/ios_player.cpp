@@ -23,10 +23,49 @@
 // local headers
 #include "common/aixlog.hpp"
 
+// Thread priority for real-time audio
+#include <pthread.h>
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
+
 namespace player
 {
 
-#define NUM_BUFFERS 2
+// Global pause state for bridge control
+std::atomic<bool> g_ios_player_paused{false};
+
+/// Set real-time thread priority for audio work
+static void setRealtimeThreadPriority()
+{
+    // Get current thread
+    mach_port_t thread = mach_thread_self();
+
+    // Set thread to time-constraint (real-time) policy
+    thread_time_constraint_policy_data_t policy;
+    policy.period = 0;        // Default period
+    policy.computation = 10000000;  // 10ms computation time
+    policy.constraint = 20000000;   // 20ms constraint
+    policy.preemptible = TRUE;
+
+    kern_return_t result = thread_policy_set(
+        thread,
+        THREAD_TIME_CONSTRAINT_POLICY,
+        (thread_policy_t)&policy,
+        THREAD_TIME_CONSTRAINT_POLICY_COUNT
+    );
+
+    if (result != KERN_SUCCESS)
+    {
+        // Fall back to high priority via pthread
+        struct sched_param param;
+        param.sched_priority = sched_get_priority_max(SCHED_FIFO);
+        pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+    }
+
+    mach_port_deallocate(mach_task_self(), thread);
+}
+
+#define NUM_BUFFERS 4
 
 static constexpr auto LOG_TAG = "IOSPlayer";
 
@@ -39,7 +78,7 @@ void ios_callback(void* custom_data, AudioQueueRef queue, AudioQueueBufferRef bu
 
 
 IOSPlayer::IOSPlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
-    : Player(io_context, settings, stream), ms_(100), pubStream_(stream)
+    : Player(io_context, settings, stream), ms_(200), pubStream_(stream)  // 200ms buffer for iOS stability
 {
 }
 
@@ -52,14 +91,46 @@ IOSPlayer::~IOSPlayer()
 std::vector<PcmDevice> IOSPlayer::pcm_list()
 {
     // iOS doesn't support device enumeration - there's only the system output
-    std::vector<PcmDevice> result;
-    result.push_back(PcmDevice(0, "Default Output"));
-    return result;
+    std::vector<PcmDevice> devices;
+    devices.push_back(PcmDevice(0, "Default Output"));
+    return devices;
+}
+
+
+void IOSPlayer::pause()
+{
+    LOG(INFO, LOG_TAG) << "Pausing audio playback\n";
+    g_ios_player_paused.store(true);
+    if (queue_)
+    {
+        AudioQueuePause(queue_);
+    }
+}
+
+
+void IOSPlayer::resume()
+{
+    LOG(INFO, LOG_TAG) << "Resuming audio playback\n";
+    g_ios_player_paused.store(false);
+    if (queue_)
+    {
+        AudioQueueStart(queue_, NULL);
+    }
 }
 
 
 void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRef)
 {
+    char* buffer = (char*)bufferRef->mAudioData;
+
+    // If paused, output silence instead of actual audio
+    if (g_ios_player_paused.load())
+    {
+        memset(buffer, 0, bufferRef->mAudioDataByteSize);
+        AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
+        return;
+    }
+
     // Estimate the playout delay by checking the number of frames left in the buffer
     // and add ms_ (= complete buffer size). Based on trying.
     AudioTimeStamp timestamp;
@@ -70,7 +141,6 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     bufferedMs += 15;
 
     chronos::usec delay(bufferedMs * 1000);
-    char* buffer = (char*)bufferRef->mAudioData;
     if (!pubStream_->getPlayerChunkOrSilence(buffer, delay, frames_))
     {
         if (chronos::getTickCount() - lastChunkTick > 5000)
@@ -103,6 +173,10 @@ bool IOSPlayer::needsThread() const
 
 void IOSPlayer::worker()
 {
+    // Boost thread priority for real-time audio
+    setRealtimeThreadPriority();
+    LOG(INFO, LOG_TAG) << "Audio worker thread started with real-time priority\n";
+
     while (active_)
     {
         if (pubStream_->waitForChunk(std::chrono::milliseconds(100)))
@@ -148,6 +222,9 @@ bool IOSPlayer::initAudioQueue()
         return false;
     }
 
+    // Store queue reference for pause/resume
+    queue_ = queue;
+
     status = AudioQueueCreateTimeline(queue, &timeLine_);
     if (status != noErr)
     {
@@ -170,13 +247,21 @@ bool IOSPlayer::initAudioQueue()
     }
 
     LOG(DEBUG, LOG_TAG) << "IOSPlayer::initAudioQueue starting\n";
-    // Note: AudioQueueCreateTimeline already called above - don't duplicate
-    status = AudioQueueStart(queue, NULL);
-    if (status != noErr)
+    // Start in paused state if already paused (use global as source of truth)
+    if (!g_ios_player_paused.load())
     {
-        LOG(ERROR, LOG_TAG) << "AudioQueueStart failed: " << status << "\n";
-        AudioQueueDispose(queue, true);
-        return false;
+        status = AudioQueueStart(queue, NULL);
+        if (status != noErr)
+        {
+            LOG(ERROR, LOG_TAG) << "AudioQueueStart failed: " << status << "\n";
+            queue_ = nullptr;
+            AudioQueueDispose(queue, true);
+            return false;
+        }
+    }
+    else
+    {
+        LOG(INFO, LOG_TAG) << "Audio queue created but paused\n";
     }
 
     CFRunLoopRun();
@@ -186,6 +271,7 @@ bool IOSPlayer::initAudioQueue()
 
 void IOSPlayer::uninitAudioQueue(AudioQueueRef queue)
 {
+    queue_ = nullptr;
     AudioQueueStop(queue, false);
     AudioQueueDispose(queue, false);
     pubStream_->clearChunks();

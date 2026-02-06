@@ -49,10 +49,11 @@ set(SNAPCLIENT_SOURCES
   ${SNAPCAST_DIR}/client/decoder/opus_decoder.cpp
   ${SNAPCAST_DIR}/client/decoder/null_decoder.cpp
 
-  # Player - CoreAudio (works on both macOS and iOS via shim) + File player
+  # Player - CoreAudio (works on both macOS and iOS via shim) + File player + iOS player
   ${SNAPCAST_DIR}/client/player/player.cpp
   ${SNAPCAST_DIR}/client/player/coreaudio_player.cpp
   ${SNAPCAST_DIR}/client/player/file_player.cpp
+  ${IOS_PLAYER_DIR}/ios_player.cpp
 
   # Common
   ${SNAPCAST_DIR}/common/base64.cpp
@@ -64,13 +65,15 @@ set(SNAPCLIENT_SOURCES
 
 # Include paths
 include_directories(
-  ${IOS_SHIM_DIR}            # iOS platform shim (must be first)
+  ${IOS_SHIM_DIR}            # iOS platform shim (must be first — provides stubs
+                             # for sys/sysinfo.h, IOKit, CoreAudio)
   ${IOS_PLAYER_DIR}          # iOS player
   ${SNAPCAST_DIR}
   ${SNAPCAST_DIR}/client
   ${SNAPCAST_DIR}/common
   ${FLAC_ROOT}/include
   ${OPUS_ROOT}/include
+  ${OPUS_ROOT}/include/opus  # MACOS define uses #include <opus.h> (no subdir)
   ${OGG_ROOT}/include
 )
 
@@ -80,9 +83,13 @@ set(SNAPCAST_VERSION "0.34.0")
 
 add_compile_definitions(
   VERSION="${SNAPCAST_VERSION}"
-  IOS                    # iOS-specific code paths (must be before MACOS/FREEBSD checks)
-  FREEBSD                # Disable sys/sysinfo.h (used as workaround)
+  IOS                    # iOS-specific code paths
+  MACOS                  # iOS shares macOS code paths: getifaddrs for MAC address,
+                         # mach timers, opus.h include.  IOKit stubs in ios_shim/.
+  FREEBSD                # Also needed: skips Linux-only ifr_hwaddr in utils.hpp
+                         # (SIOCGIFMAC and ifr_ifru.ifru_addr work on iOS)
   HAS_COREAUDIO          # Enable CoreAudio player (works on iOS via shim)
+  HAS_IOS                # Enable iOS player (AudioQueue-based)
   HAS_FLAC               # Enable FLAC decoder
   HAS_OPUS               # Enable Opus decoder
   # HAS_OGG is NOT defined - we don't have libvorbis
@@ -91,6 +98,13 @@ add_compile_definitions(
 
 # ── Static library: snapclient core ─────────────────────────────────
 add_library(snapclient_core STATIC ${SNAPCLIENT_SOURCES})
+
+# Force-include popen override: on iOS, popen() calls fork() which is
+# restricted by the sandbox (EXC_GUARD crash).  This header makes popen()
+# return NULL so execGetOutput() in utils.hpp returns "" safely.
+target_compile_options(snapclient_core PRIVATE
+  "-include" "${IOS_SHIM_DIR}/ios_popen_override.h"
+)
 
 target_link_directories(snapclient_core PRIVATE
   ${FLAC_ROOT}/lib
@@ -115,6 +129,7 @@ add_library(snapclient_bridge STATIC
 target_link_libraries(snapclient_bridge PRIVATE snapclient_core)
 target_include_directories(snapclient_bridge PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/bridge
+  ${IOS_PLAYER_DIR}
 )
 
 # ── Install ──────────────────────────────────────────────────────────

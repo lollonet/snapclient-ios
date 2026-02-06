@@ -204,6 +204,33 @@ build_opus() {
 }
 
 # ── 5. Snapcast source ──────────────────────────────────────────────
+apply_ios_patches() {
+    local dest="$1"
+    local patch_dir="$ROOT_DIR/patches"
+
+    if [ -f "$patch_dir/ios-time-fix.patch" ]; then
+        info "Applying iOS time fix patch..."
+        cd "$dest"
+        # Apply patch (ignore if already applied)
+        patch -p1 -N < "$patch_dir/ios-time-fix.patch" || true
+        cd "$ROOT_DIR"
+    fi
+
+    if [ -f "$patch_dir/ios-controller.patch" ]; then
+        info "Applying iOS controller patch..."
+        cd "$dest"
+        patch -p1 -N < "$patch_dir/ios-controller.patch" || true
+        cd "$ROOT_DIR"
+    fi
+
+    if [ -f "$patch_dir/ios-time-sync-wait.patch" ]; then
+        info "Applying iOS time sync wait patch..."
+        cd "$dest"
+        patch -p1 -N < "$patch_dir/ios-time-sync-wait.patch" || true
+        cd "$ROOT_DIR"
+    fi
+}
+
 clone_snapcast() {
     local dest="$VENDOR_DIR/snapcast"
     if [ -d "$dest/.git" ]; then
@@ -212,11 +239,13 @@ clone_snapcast() {
         git fetch --tags
         git checkout "$SNAPCAST_TAG"
         cd "$ROOT_DIR"
+        apply_ios_patches "$dest"
         return
     fi
 
     info "Cloning Snapcast $SNAPCAST_TAG..."
     git clone --branch "$SNAPCAST_TAG" --depth 1 "$SNAPCAST_REPO" "$dest"
+    apply_ios_patches "$dest"
 
     info "Snapcast source ready."
 }
