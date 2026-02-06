@@ -124,8 +124,19 @@ struct SnapClient {
 
 static void notify_state(SnapClient* c, SnapClientState new_state) {
     c->state.store(new_state);
-    if (c->state_cb) {
-        c->state_cb(c->state_ctx, new_state);
+
+    // Copy callback and context inside lock to avoid race with callback modification
+    SnapClientStateCallback cb = nullptr;
+    void* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(c->mutex);
+        cb = c->state_cb;
+        ctx = c->state_ctx;
+    }
+
+    // Call callback outside lock to avoid potential deadlock
+    if (cb) {
+        cb(ctx, new_state);
     }
 }
 
