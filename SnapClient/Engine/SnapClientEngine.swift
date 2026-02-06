@@ -175,11 +175,6 @@ final class SnapClientEngine: ObservableObject {
     /// Connect to a Snapserver and start audio playback.
     /// The connection is performed on a background thread to avoid blocking the UI.
     func start(host: String, port: Int = 1704) {
-        guard let ref = clientRef else {
-            log.error("[\(self.instanceId)] start: clientRef is nil!")
-            return
-        }
-
         // Debug: log raw bytes of host string
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
@@ -192,15 +187,25 @@ final class SnapClientEngine: ObservableObject {
         let portCopy = port
         let instanceId = self.instanceId
 
-        // Perform blocking TCP connection on background thread
-        Task.detached { [weak self] in
+        // Perform blocking TCP connection on background thread.
+        // Note: We capture self strongly to keep clientRef valid during the blocking call.
+        // This delays deallocation until the connection attempt completes, which is safer
+        // than risking use-after-free if the engine is deallocated mid-connection.
+        Task.detached { [self] in
+            // Get ref on MainActor since clientRef is accessed from @MainActor context
+            guard let ref = await MainActor.run(body: { self.clientRef }) else {
+                await MainActor.run {
+                    log.error("[\(instanceId)] start: clientRef is nil!")
+                }
+                return
+            }
+
             let success = hostCopy.withCString { cHost in
                 snapclient_start(ref, cHost, Int32(portCopy))
             }
 
             // Update state on main thread
-            await MainActor.run { [weak self] in
-                guard let self else { return }
+            await MainActor.run {
                 log.info("[\(instanceId)] snapclient_start returned \(success)")
 
                 if success {
