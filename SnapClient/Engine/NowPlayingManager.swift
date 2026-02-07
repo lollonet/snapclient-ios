@@ -52,19 +52,11 @@ final class NowPlayingManager: ObservableObject {
         self.engine = engine
         self.rpcClient = rpcClient
 
-        // Ensure audio session is configured for playback
-        // This is typically done by the engine, but we ensure it here for remote controls
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default)
-            try session.setActive(true)
-            print("[NowPlaying] Audio session activated")
-        } catch {
-            print("[NowPlaying] Audio session error: \(error)")
-        }
+        // Log audio session state for debugging
+        let session = AVAudioSession.sharedInstance()
+        print("[NowPlaying] Audio session - category: \(session.category.rawValue), mode: \(session.mode.rawValue), isOtherAudioPlaying: \(session.isOtherAudioPlaying)")
 
         // Start receiving remote control events (required for lock screen/Control Center)
-        // Must be called on main thread after app is fully initialized
         UIApplication.shared.beginReceivingRemoteControlEvents()
         print("[NowPlaying] beginReceivingRemoteControlEvents called")
 
@@ -173,12 +165,15 @@ final class NowPlayingManager: ObservableObject {
         nowPlayingInfo[MPMediaItemPropertyTitle] = metadata?.title ?? "Snapcast"
         nowPlayingInfo[MPMediaItemPropertyArtist] = metadata?.artist ?? "Unknown Artist"
         nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = metadata?.album ?? ""
+        nowPlayingInfo[MPMediaItemPropertyMediaType] = MPMediaType.anyAudio.rawValue
 
-        // Playback state
+        // Playback state - set both rate AND explicitly mark as live stream
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = engine.isPaused ? 0.0 : 1.0
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+        // For live streams, set elapsed time to 0 (no seek bar shown)
+        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
 
-        // Set the info first (artwork loads async)
+        // Set the info
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
         print("[NowPlaying] Set nowPlayingInfo: title='\(nowPlayingInfo[MPMediaItemPropertyTitle] ?? "nil")' artist='\(nowPlayingInfo[MPMediaItemPropertyArtist] ?? "nil")' playbackRate=\(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ?? "nil")")
 

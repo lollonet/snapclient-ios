@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct SnapClientApp: App {
@@ -6,6 +7,12 @@ struct SnapClientApp: App {
     @StateObject private var discovery = ServerDiscovery()
     @StateObject private var rpcClient = SnapcastRPCClient()
     @StateObject private var nowPlaying = NowPlayingManager()
+
+    init() {
+        // Start receiving remote control events early in app lifecycle
+        // This is required for lock screen and Control Center controls
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+    }
 
     var body: some Scene {
         WindowGroup {
