@@ -2,6 +2,7 @@ import Foundation
 import MediaPlayer
 import Combine
 import UIKit
+import AVFoundation
 
 /// Manages MPNowPlayingInfoCenter and MPRemoteCommandCenter integration.
 ///
@@ -33,19 +34,16 @@ final class NowPlayingManager: ObservableObject {
 
     init() {
         setupRemoteCommandCenter()
-
-        // Start receiving remote control events (required for lock screen/Control Center)
-        UIApplication.shared.beginReceivingRemoteControlEvents()
     }
 
     deinit {
-        UIApplication.shared.endReceivingRemoteControlEvents()
-
         // Clean up remote command handlers
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.playCommand.removeTarget(nil)
         commandCenter.pauseCommand.removeTarget(nil)
         commandCenter.togglePlayPauseCommand.removeTarget(nil)
+
+        UIApplication.shared.endReceivingRemoteControlEvents()
     }
 
     /// Configure the manager with engine and RPC client.
@@ -54,13 +52,29 @@ final class NowPlayingManager: ObservableObject {
         self.engine = engine
         self.rpcClient = rpcClient
 
+        // Ensure audio session is configured for playback
+        // This is typically done by the engine, but we ensure it here for remote controls
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            print("[NowPlaying] Audio session activated")
+        } catch {
+            print("[NowPlaying] Audio session error: \(error)")
+        }
+
+        // Start receiving remote control events (required for lock screen/Control Center)
+        // Must be called on main thread after app is fully initialized
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+        print("[NowPlaying] beginReceivingRemoteControlEvents called")
+
         // Subscribe to state changes
         setupObservers()
 
         // Initial update
         updateNowPlayingInfo()
 
-        print("[NowPlaying] Configured with engine and RPC client")
+        print("[NowPlaying] Configured with engine and RPC client, clientId=\(myClientId)")
     }
 
     // MARK: - Remote Command Center
@@ -96,13 +110,14 @@ final class NowPlayingManager: ObservableObject {
         }
 
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            print("[NowPlaying] togglePlayPauseCommand received")
             Task { @MainActor in
                 self?.engine?.togglePlayback()
             }
             return .success
         }
 
-        print("[NowPlaying] Remote command center configured")
+        print("[NowPlaying] Remote command center configured - play:\(commandCenter.playCommand.isEnabled) pause:\(commandCenter.pauseCommand.isEnabled) toggle:\(commandCenter.togglePlayPauseCommand.isEnabled)")
     }
 
     // MARK: - Observers
@@ -134,8 +149,17 @@ final class NowPlayingManager: ObservableObject {
     // MARK: - Now Playing Info
 
     private func updateNowPlayingInfo() {
-        guard let engine, engine.state.isActive else {
+        guard let engine else {
+            print("[NowPlaying] updateNowPlayingInfo: engine is nil")
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+
+        print("[NowPlaying] updateNowPlayingInfo: state=\(engine.state.displayName) isActive=\(engine.state.isActive)")
+
+        guard engine.state.isActive else {
             // Clear now playing info when not connected
+            print("[NowPlaying] Clearing now playing info (not active)")
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
@@ -156,6 +180,7 @@ final class NowPlayingManager: ObservableObject {
 
         // Set the info first (artwork loads async)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+        print("[NowPlaying] Set nowPlayingInfo: title='\(nowPlayingInfo[MPMediaItemPropertyTitle] ?? "nil")' artist='\(nowPlayingInfo[MPMediaItemPropertyArtist] ?? "nil")' playbackRate=\(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ?? "nil")")
 
         // Load artwork if available
         if let artUrlString = metadata?.artUrl, !artUrlString.isEmpty {
