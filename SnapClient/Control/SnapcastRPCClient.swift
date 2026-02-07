@@ -154,12 +154,24 @@ final class SnapcastRPCClient: ObservableObject {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var receiveTask: Task<Void, Never>?
+    private var pingTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+
+    // Connection info for reconnection
+    private var connectedHost: String?
+    private var connectedPort: Int?
+
+    // Ping interval to keep connection alive (30 seconds)
+    private let pingInterval: TimeInterval = 30
 
     // MARK: - Connection
 
     /// Connect to the Snapserver JSON-RPC API via WebSocket.
     func connect(host: String, port: Int = 1780) {
         disconnect()
+
+        connectedHost = host
+        connectedPort = port
 
         let urlString = "ws://\(host):\(port)/jsonrpc"
         print("[RPC] connecting to \(urlString)")
@@ -174,6 +186,7 @@ final class SnapcastRPCClient: ObservableObject {
 
         isConnected = true
         startReceiving()
+        startPinging()
 
         Task {
             await refreshStatus()
@@ -182,12 +195,21 @@ final class SnapcastRPCClient: ObservableObject {
 
     /// Disconnect from the server.
     func disconnect() {
+        // Cancel all background tasks
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        pingTask?.cancel()
+        pingTask = nil
         receiveTask?.cancel()
         receiveTask = nil
+
+        // Close WebSocket
         webSocket?.cancel(with: .normalClosure, reason: nil)
         webSocket = nil
         session?.invalidateAndCancel()
         session = nil
+
+        // Clear state but keep host/port for potential reconnect
         isConnected = false
         serverStatus = nil
         pendingRequests.values.forEach {
@@ -361,12 +383,90 @@ final class SnapcastRPCClient: ObservableObject {
                 } catch {
                     print("[RPC] receive error: \(error)")
                     await MainActor.run {
-                        self.isConnected = false
+                        self.handleDisconnect()
                     }
                     break
                 }
             }
             print("[RPC] receive loop ended")
+        }
+    }
+
+    private func startPinging() {
+        pingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(self?.pingInterval ?? 30))
+                guard !Task.isCancelled else { break }
+
+                guard let self,
+                      let webSocket = await MainActor.run(body: { self.webSocket }) else {
+                    break
+                }
+
+                do {
+                    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                        webSocket.sendPing { error in
+                            if let error {
+                                cont.resume(throwing: error)
+                            } else {
+                                cont.resume()
+                            }
+                        }
+                    }
+                    print("[RPC] ping/pong ok")
+                } catch {
+                    print("[RPC] ping failed: \(error)")
+                    await MainActor.run {
+                        self.handleDisconnect()
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    private func handleDisconnect() {
+        // Stop pinging
+        pingTask?.cancel()
+        pingTask = nil
+
+        // Mark as disconnected
+        isConnected = false
+
+        // Clean up WebSocket
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+        session?.invalidateAndCancel()
+        session = nil
+
+        // Fail pending requests
+        pendingRequests.values.forEach {
+            $0.resume(throwing: NSError(domain: "SnapcastRPC", code: -1,
+                                        userInfo: [NSLocalizedDescriptionKey: "Connection lost"]))
+        }
+        pendingRequests.removeAll()
+
+        // Schedule reconnect
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard let host = connectedHost, let port = connectedPort else {
+            print("[RPC] no host/port for reconnect")
+            return
+        }
+
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            print("[RPC] scheduling reconnect in 2s...")
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard let self else { return }
+                print("[RPC] attempting reconnect to \(host):\(port)")
+                self.connect(host: host, port: port)
+            }
         }
     }
 
