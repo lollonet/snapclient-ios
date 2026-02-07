@@ -23,13 +23,24 @@ final class NowPlayingManager: ObservableObject {
     private var artworkCache: [String: MPMediaItemArtwork] = [:]
     private var currentArtworkURL: String?
 
+    /// Our unique client ID (matches what engine sets and ContentView uses)
+    private var myClientId: String {
+        let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? ""
+        return "SnapForge-\(vendorId.prefix(8))"
+    }
+
     // MARK: - Lifecycle
 
     init() {
         setupRemoteCommandCenter()
+
+        // Start receiving remote control events (required for lock screen/Control Center)
+        UIApplication.shared.beginReceivingRemoteControlEvents()
     }
 
     deinit {
+        UIApplication.shared.endReceivingRemoteControlEvents()
+
         // Clean up remote command handlers
         let commandCenter = MPRemoteCommandCenter.shared()
         commandCenter.playCommand.removeTarget(nil)
@@ -48,6 +59,8 @@ final class NowPlayingManager: ObservableObject {
 
         // Initial update
         updateNowPlayingInfo()
+
+        print("[NowPlaying] Configured with engine and RPC client")
     }
 
     // MARK: - Remote Command Center
@@ -154,23 +167,23 @@ final class NowPlayingManager: ObservableObject {
 
     private func currentStreamMetadata() -> SnapcastStream.StreamMetadata? {
         guard let rpcClient,
-              let engine,
-              let status = rpcClient.serverStatus,
-              let hostIP = engine.connectedHost else {
+              let status = rpcClient.serverStatus else {
             return nil
         }
 
-        // Find our client by matching host IP
+        // Find our client by matching our unique client ID
         let ourClient = status.allClients.first { client in
-            client.host?.ip == hostIP
+            client.id == myClientId
         }
 
-        guard let client = ourClient else { return nil }
+        guard let client = ourClient else {
+            print("[NowPlaying] Client not found for ID: \(myClientId)")
+            return nil
+        }
 
-        // Find the group containing our client
+        // Find the group containing our client, then get its stream
         for group in status.groups {
             if group.clients.contains(where: { $0.id == client.id }) {
-                // Get the stream for this group
                 if let stream = status.streams.first(where: { $0.id == group.stream_id }) {
                     return stream.properties?.metadata
                 }
