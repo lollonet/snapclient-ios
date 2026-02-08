@@ -567,14 +567,27 @@ final class SnapcastRPCClient: ObservableObject {
         }
 
         // Try to match to a pending request
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let id = json["id"] as? Int,
-           let cont = pendingRequests.removeValue(forKey: id) {
-            cont.resume(returning: data)
-        } else {
-            // Server notification — use debounced refresh to avoid storm
-            debouncedRefresh()
+        // JSON-RPC 2.0 allows id to be Int or String, so handle both
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            var requestId: Int?
+
+            // Try Int first (most common)
+            if let intId = json["id"] as? Int {
+                requestId = intId
+            }
+            // Also handle String id (per JSON-RPC 2.0 spec)
+            else if let stringId = json["id"] as? String, let intId = Int(stringId) {
+                requestId = intId
+            }
+
+            if let id = requestId, let cont = pendingRequests.removeValue(forKey: id) {
+                cont.resume(returning: data)
+                return
+            }
         }
+
+        // Server notification — use debounced refresh to avoid storm
+        debouncedRefresh()
     }
 }
 

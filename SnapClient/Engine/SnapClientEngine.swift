@@ -108,6 +108,14 @@ final class SnapClientEngine: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
 
+    /// Tracks if a blocking C++ connect is in progress.
+    /// Used to prevent socket exhaustion from rapid connection attempts.
+    private var isConnecting = false
+
+    /// Last connection attempt time for debouncing rapid taps
+    private var lastConnectionAttempt: Date = .distantPast
+    private let connectionDebounceInterval: TimeInterval = 0.5
+
     // Exponential backoff for reconnection
     private var reconnectAttempts: Int = 0
     private let maxReconnectDelay: TimeInterval = 60.0
@@ -181,11 +189,19 @@ final class SnapClientEngine: ObservableObject {
 
     /// Connect to a Snapserver and start audio playback.
     /// The connection is performed on a background thread to avoid blocking the UI.
-    /// Connection attempts are serialized - a new start() cancels any in-progress connection.
+    /// Connection attempts are serialized and debounced to prevent socket exhaustion.
     func start(host: String, port: Int = 1704) {
         // Debug: log raw bytes of host string
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
+
+        // Debounce rapid connection attempts to prevent socket exhaustion
+        let now = Date()
+        if now.timeIntervalSince(lastConnectionAttempt) < connectionDebounceInterval && isConnecting {
+            log.warning("[\(self.instanceId)] connection attempt debounced (too rapid)")
+            return
+        }
+        lastConnectionAttempt = now
 
         // Cancel any pending auto-reconnect to prevent race condition
         reconnectTask?.cancel()
@@ -207,8 +223,18 @@ final class SnapClientEngine: ObservableObject {
         let portCopy = port
         let instanceId = self.instanceId
 
+        // Mark as connecting before starting
+        isConnecting = true
+
         // Store the new connection task so we can cancel it if user switches again
         connectionTask = Task.detached { [self] in
+            // Ensure we clear the connecting flag when done
+            defer {
+                Task { @MainActor in
+                    self.isConnecting = false
+                }
+            }
+
             // Check cancellation early
             guard !Task.isCancelled else {
                 await MainActor.run {
@@ -297,9 +323,23 @@ final class SnapClientEngine: ObservableObject {
         connectedHost = nil
         connectedPort = nil
 
-        // Run blocking stop on background thread
-        Task.detached {
+        // Run blocking stop on background thread.
+        // Capture self strongly to ensure clientRef survives until snapclient_stop returns,
+        // preventing use-after-free if the engine is deallocated during the stop.
+        Task.detached { [self] in
             snapclient_stop(ref)
+
+            // Deactivate audio session to be a good OS citizen.
+            // This allows other apps (Spotify, Podcasts) to resume correctly
+            // and removes our card from Control Center.
+            await MainActor.run {
+                do {
+                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    log.info("Audio session deactivated")
+                } catch {
+                    log.warning("Failed to deactivate audio session: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
