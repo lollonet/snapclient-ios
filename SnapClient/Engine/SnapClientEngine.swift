@@ -112,10 +112,9 @@ final class SnapClientEngine: ObservableObject {
     /// Used to prevent socket exhaustion from rapid connection attempts.
     private var isConnecting = false
 
-    /// Last connection target for debouncing rapid taps to SAME server
-    private var lastConnectionTarget: String?
-    private var lastConnectionAttempt: Date = .distantPast
-    private let connectionDebounceInterval: TimeInterval = 0.3
+    /// The server target currently being connected to (nil if not connecting)
+    /// Format: "host:port"
+    private var activeConnectionTarget: String?
 
     // Exponential backoff for reconnection
     private var reconnectAttempts: Int = 0
@@ -196,25 +195,28 @@ final class SnapClientEngine: ObservableObject {
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
 
-        // Debounce rapid taps to the SAME server only (not legitimate server switches)
         let connectionTarget = "\(host):\(port)"
-        let now = Date()
-        if connectionTarget == lastConnectionTarget &&
-           now.timeIntervalSince(lastConnectionAttempt) < connectionDebounceInterval &&
-           isConnecting {
-            log.warning("[\(self.instanceId)] connection attempt debounced (rapid tap to same server)")
+
+        // If we're already connecting to THIS SAME server, skip entirely
+        // This prevents multiple rapid taps from cancelling each other
+        if connectionTarget == activeConnectionTarget {
+            log.info("[\(self.instanceId)] already connecting to \(connectionTarget), skipping duplicate")
             return
         }
-        lastConnectionTarget = connectionTarget
-        lastConnectionAttempt = now
 
         // Cancel any pending auto-reconnect to prevent race condition
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempts = 0
 
-        // Cancel any in-progress connection attempt to prevent racing
-        connectionTask?.cancel()
+        // Cancel any in-progress connection to a DIFFERENT server
+        if let oldTarget = activeConnectionTarget {
+            log.info("[\(self.instanceId)] cancelling connection to \(oldTarget) for switch to \(connectionTarget)")
+            connectionTask?.cancel()
+        }
+
+        // Track which server we're now connecting to
+        activeConnectionTarget = connectionTarget
 
         // Clear connection info immediately to prevent auto-reconnect to old server
         connectedHost = nil
@@ -227,15 +229,19 @@ final class SnapClientEngine: ObservableObject {
         let hostCopy = host
         let portCopy = port
         let instanceId = self.instanceId
+        let targetForCleanup = connectionTarget
 
         // Mark as connecting before starting
         isConnecting = true
 
         // Store the new connection task so we can cancel it if user switches again
         connectionTask = Task.detached { [self] in
-            // Ensure we clear the connecting flag when done
+            // Ensure we clear the connection target when done (only if still ours)
             defer {
                 Task { @MainActor in
+                    if self.activeConnectionTarget == targetForCleanup {
+                        self.activeConnectionTarget = nil
+                    }
                     self.isConnecting = false
                 }
             }
