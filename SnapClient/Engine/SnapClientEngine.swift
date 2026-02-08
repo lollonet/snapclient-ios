@@ -104,6 +104,7 @@ final class SnapClientEngine: ObservableObject {
 
     private var clientRef: SnapClientRef?
     private var reconnectTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
 
@@ -149,8 +150,9 @@ final class SnapClientEngine: ObservableObject {
     }
 
     deinit {
-        // Cancel any pending reconnect
+        // Cancel any pending reconnect or in-progress connection
         reconnectTask?.cancel()
+        connectionTask?.cancel()
 
         // Remove audio session observers
         if let observer = interruptionObserver {
@@ -178,6 +180,7 @@ final class SnapClientEngine: ObservableObject {
 
     /// Connect to a Snapserver and start audio playback.
     /// The connection is performed on a background thread to avoid blocking the UI.
+    /// Connection attempts are serialized - a new start() cancels any in-progress connection.
     func start(host: String, port: Int = 1704) {
         // Debug: log raw bytes of host string
         let hostBytes = Array(host.utf8)
@@ -188,9 +191,10 @@ final class SnapClientEngine: ObservableObject {
         reconnectTask = nil
         reconnectAttempts = 0
 
+        // Cancel any in-progress connection attempt to prevent racing
+        connectionTask?.cancel()
+
         // Clear connection info immediately to prevent auto-reconnect to old server
-        // when we stop the old connection below
-        let wasConnected = connectedHost != nil
         connectedHost = nil
         connectedPort = nil
 
@@ -202,11 +206,16 @@ final class SnapClientEngine: ObservableObject {
         let portCopy = port
         let instanceId = self.instanceId
 
-        // Perform blocking TCP connection on background thread.
-        // Note: We capture self strongly to keep clientRef valid during the blocking call.
-        // This delays deallocation until the connection attempt completes, which is safer
-        // than risking use-after-free if the engine is deallocated mid-connection.
-        Task.detached { [self] in
+        // Store the new connection task so we can cancel it if user switches again
+        connectionTask = Task.detached { [self] in
+            // Check cancellation early
+            guard !Task.isCancelled else {
+                await MainActor.run {
+                    log.info("[\(instanceId)] connection cancelled before starting")
+                }
+                return
+            }
+
             // Get ref on MainActor since clientRef is accessed from @MainActor context
             guard let ref = await MainActor.run(body: { self.clientRef }) else {
                 await MainActor.run {
@@ -216,7 +225,6 @@ final class SnapClientEngine: ObservableObject {
             }
 
             // Stop any existing connection first (C++ returns false if already connected)
-            // This is a blocking call but we're in a background thread
             let currentState = snapclient_get_state(ref)
             if currentState != SNAPCLIENT_STATE_DISCONNECTED {
                 await MainActor.run {
@@ -224,12 +232,32 @@ final class SnapClientEngine: ObservableObject {
                 }
                 snapclient_stop(ref)
 
-                // Small delay to ensure clean state transition
-                try? await Task.sleep(for: .milliseconds(100))
+                // Wait for clean state transition
+                try? await Task.sleep(for: .milliseconds(150))
+
+                // Check cancellation after stop - user may have switched servers again
+                guard !Task.isCancelled else {
+                    await MainActor.run {
+                        log.info("[\(instanceId)] connection cancelled after stop")
+                    }
+                    return
+                }
             }
 
             let success = hostCopy.withCString { cHost in
                 snapclient_start(ref, cHost, Int32(portCopy))
+            }
+
+            // Check cancellation after connect attempt
+            guard !Task.isCancelled else {
+                await MainActor.run {
+                    log.info("[\(instanceId)] connection cancelled after start, stopping")
+                }
+                // If we connected but were cancelled, stop immediately
+                if success {
+                    snapclient_stop(ref)
+                }
+                return
             }
 
             // Update state on main thread
@@ -256,6 +284,13 @@ final class SnapClientEngine: ObservableObject {
     func stop() {
         guard let ref = clientRef else { return }
         log.info("stop: calling snapclient_stop (async)")
+
+        // Cancel any pending reconnect or in-progress connection
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        connectionTask?.cancel()
+        connectionTask = nil
+        reconnectAttempts = 0
 
         // Clear state immediately for responsive UI
         connectedHost = nil
