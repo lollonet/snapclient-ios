@@ -322,6 +322,8 @@ struct PlayerView: View {
                 // Connect to first discovered server, or prompt to go to Servers tab
                 Button {
                     if let server = discovery.servers.first {
+                        // Disconnect old connections first for clean switch
+                        rpcClient.disconnect()
                         engine.start(host: server.host, port: server.port)
                         rpcClient.connect(host: server.host, port: server.controlPort)
                     }

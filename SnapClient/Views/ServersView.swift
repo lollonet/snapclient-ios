@@ -108,6 +108,9 @@ struct ServersView: View {
     }
 
     private func connectTo(host: String, port: Int) {
+        // Disconnect old RPC connection first to avoid stale state
+        rpcClient.disconnect()
+
         engine.start(host: host, port: port)
         // RPC control port is audio port + 76 (standard: 1704 -> 1780)
         rpcClient.connect(host: host, port: port + 76)

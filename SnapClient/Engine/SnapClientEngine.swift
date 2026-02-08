@@ -183,6 +183,17 @@ final class SnapClientEngine: ObservableObject {
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
 
+        // Cancel any pending auto-reconnect to prevent race condition
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempts = 0
+
+        // Clear connection info immediately to prevent auto-reconnect to old server
+        // when we stop the old connection below
+        let wasConnected = connectedHost != nil
+        connectedHost = nil
+        connectedPort = nil
+
         // Configure audio session on main thread (AVAudioSession requirement)
         configureAudioSession()
 
@@ -212,6 +223,9 @@ final class SnapClientEngine: ObservableObject {
                     log.info("[\(instanceId)] stopping existing connection before starting new one")
                 }
                 snapclient_stop(ref)
+
+                // Small delay to ensure clean state transition
+                try? await Task.sleep(for: .milliseconds(100))
             }
 
             let success = hostCopy.withCString { cHost in
