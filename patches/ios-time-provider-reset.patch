@@ -1,0 +1,16 @@
+--- a/client/time_provider.hpp
++++ b/client/time_provider.hpp
+@@ -55,6 +55,13 @@ public:
+     inline bool isSynced() const
+     {
+         return !diffBuffer_.empty();
++    }
++
++    /// Reset time sync state (call when disconnecting)
++    inline void reset()
++    {
++        diffBuffer_.clear();
++        diffToServer_ = 0;
+     }
+
+     /// @return time diff to server

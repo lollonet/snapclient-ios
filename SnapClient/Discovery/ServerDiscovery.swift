@@ -135,7 +135,9 @@ final class ServerDiscovery: ObservableObject {
                             let bytes = [UInt8](addr.rawValue)
                             hostString = String(format: "%d.%d.%d.%d",
                                 bytes[0], bytes[1], bytes[2], bytes[3])
+                            #if DEBUG
                             print("[Discovery] IPv4: \(hostString)")
+                            #endif
                         case .ipv6(let addr):
                             // For IPv6, use description but strip %interface suffix
                             let raw = "\(addr)"
@@ -144,10 +146,14 @@ final class ServerDiscovery: ObservableObject {
                             } else {
                                 hostString = raw
                             }
+                            #if DEBUG
                             print("[Discovery] IPv6: \(hostString)")
+                            #endif
                         case .name(let hostname, _):
                             hostString = hostname
+                            #if DEBUG
                             print("[Discovery] Name: \(hostname)")
+                            #endif
                         @unknown default:
                             // Strip %interface suffix if present
                             let raw = "\(host)"
@@ -156,7 +162,9 @@ final class ServerDiscovery: ObservableObject {
                             } else {
                                 hostString = raw
                             }
+                            #if DEBUG
                             print("[Discovery] Unknown: \(hostString)")
+                            #endif
                         }
                         let server = DiscoveredServer(
                             id: serviceId,

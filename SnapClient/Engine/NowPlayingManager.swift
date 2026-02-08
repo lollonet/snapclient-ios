@@ -54,12 +54,16 @@ final class NowPlayingManager: ObservableObject {
         self.rpcClient = rpcClient
 
         // Log audio session state for debugging
+        #if DEBUG
         let session = AVAudioSession.sharedInstance()
         print("[NowPlaying] Audio session - category: \(session.category.rawValue), mode: \(session.mode.rawValue), isOtherAudioPlaying: \(session.isOtherAudioPlaying)")
+        #endif
 
         // Start receiving remote control events (required for lock screen/Control Center)
         UIApplication.shared.beginReceivingRemoteControlEvents()
+        #if DEBUG
         print("[NowPlaying] beginReceivingRemoteControlEvents called")
+        #endif
 
         // Subscribe to state changes
         setupObservers()
@@ -67,7 +71,9 @@ final class NowPlayingManager: ObservableObject {
         // Initial update
         updateNowPlayingInfo()
 
+        #if DEBUG
         print("[NowPlaying] Configured with engine and RPC client, clientId=\(myClientId)")
+        #endif
     }
 
     // MARK: - Remote Command Center
@@ -103,14 +109,18 @@ final class NowPlayingManager: ObservableObject {
         }
 
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            #if DEBUG
             print("[NowPlaying] togglePlayPauseCommand received")
+            #endif
             Task { @MainActor in
                 self?.engine?.togglePlayback()
             }
             return .success
         }
 
+        #if DEBUG
         print("[NowPlaying] Remote command center configured - play:\(commandCenter.playCommand.isEnabled) pause:\(commandCenter.pauseCommand.isEnabled) toggle:\(commandCenter.togglePlayPauseCommand.isEnabled)")
+        #endif
     }
 
     // MARK: - Observers
@@ -143,16 +153,22 @@ final class NowPlayingManager: ObservableObject {
 
     private func updateNowPlayingInfo() {
         guard let engine else {
+            #if DEBUG
             print("[NowPlaying] updateNowPlayingInfo: engine is nil")
+            #endif
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
 
+        #if DEBUG
         print("[NowPlaying] updateNowPlayingInfo: state=\(engine.state.displayName) isActive=\(engine.state.isActive)")
+        #endif
 
         guard engine.state.isActive else {
             // Clear now playing info when not connected
+            #if DEBUG
             print("[NowPlaying] Clearing now playing info (not active)")
+            #endif
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
@@ -176,14 +192,18 @@ final class NowPlayingManager: ObservableObject {
 
         // Set the info
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+        #if DEBUG
         print("[NowPlaying] Set nowPlayingInfo: title='\(nowPlayingInfo[MPMediaItemPropertyTitle] ?? "nil")' artist='\(nowPlayingInfo[MPMediaItemPropertyArtist] ?? "nil")' playbackRate=\(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ?? "nil")")
+        #endif
 
         // Load artwork if available
         if let artUrlString = metadata?.artUrl, !artUrlString.isEmpty {
             loadArtwork(from: artUrlString)
         }
 
+        #if DEBUG
         print("[NowPlaying] Updated: \(metadata?.artist ?? "?") - \(metadata?.title ?? "?")")
+        #endif
     }
 
     private func currentStreamMetadata() -> SnapcastStream.StreamMetadata? {
@@ -198,7 +218,9 @@ final class NowPlayingManager: ObservableObject {
         }
 
         guard let client = ourClient else {
+            #if DEBUG
             print("[NowPlaying] Client not found for ID: \(myClientId)")
+            #endif
             return nil
         }
 
@@ -244,9 +266,13 @@ final class NowPlayingManager: ObservableObject {
                     updateArtwork(artwork)
                 }
 
+                #if DEBUG
                 print("[NowPlaying] Artwork loaded from \(urlString)")
+                #endif
             } catch {
+                #if DEBUG
                 print("[NowPlaying] Failed to load artwork: \(error)")
+                #endif
             }
         }
     }

@@ -11,6 +11,7 @@
 // Snapcast headers
 #include "client_settings.hpp"
 #include "controller.hpp"
+#include "time_provider.hpp"
 #include "common/aixlog.hpp"
 #include "ios_player.hpp"
 
@@ -70,9 +71,16 @@ static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...) {
     os_log_with_type(bridge_log(), type, "%{public}s", buf);
 #endif
 
-    std::lock_guard<std::mutex> lock(g_log_mutex);
-    if (g_log_cb) {
-        g_log_cb(g_log_ctx, level, buf);
+    // Copy callback and context inside lock, call outside to avoid deadlock
+    SnapClientLogCallback cb = nullptr;
+    void* ctx = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        cb = g_log_cb;
+        ctx = g_log_ctx;
+    }
+    if (cb) {
+        cb(ctx, level, buf);
     }
 }
 
@@ -263,6 +271,9 @@ void snapclient_stop(SnapClientRef client) {
     // Cleanup
     client->controller.reset();
     client->io_context.reset();
+
+    // Reset time provider to clear stale sync data from previous server
+    TimeProvider::getInstance().reset();
 
     notify_state(client, SNAPCLIENT_STATE_DISCONNECTED);
 }

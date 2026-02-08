@@ -78,7 +78,7 @@ void ios_callback(void* custom_data, AudioQueueRef queue, AudioQueueBufferRef bu
 
 
 IOSPlayer::IOSPlayer(boost::asio::io_context& io_context, const ClientSettings::Player& settings, std::shared_ptr<Stream> stream)
-    : Player(io_context, settings, stream), ms_(200), pubStream_(stream)  // 200ms buffer for iOS stability
+    : Player(io_context, settings, stream), ms_(100), pubStream_(stream)  // 100ms buffer (400ms total with 4 buffers)
 {
 }
 

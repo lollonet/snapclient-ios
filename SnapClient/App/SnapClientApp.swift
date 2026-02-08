@@ -41,6 +41,7 @@ struct SnapClientApp: App {
     private func handleScenePhaseChange(_ phase: ScenePhase) {
         // Just log phase changes - don't manipulate audio session here
         // The audio session is managed by SnapClientEngine
+        #if DEBUG
         switch phase {
         case .active:
             print("[App] Scene became active")
@@ -51,5 +52,6 @@ struct SnapClientApp: App {
         @unknown default:
             break
         }
+        #endif
     }
 }

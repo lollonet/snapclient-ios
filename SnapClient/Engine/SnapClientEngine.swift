@@ -204,6 +204,16 @@ final class SnapClientEngine: ObservableObject {
                 return
             }
 
+            // Stop any existing connection first (C++ returns false if already connected)
+            // This is a blocking call but we're in a background thread
+            let currentState = snapclient_get_state(ref)
+            if currentState != SNAPCLIENT_STATE_DISCONNECTED {
+                await MainActor.run {
+                    log.info("[\(instanceId)] stopping existing connection before starting new one")
+                }
+                snapclient_stop(ref)
+            }
+
             let success = hostCopy.withCString { cHost in
                 snapclient_start(ref, cHost, Int32(portCopy))
             }
@@ -228,19 +238,26 @@ final class SnapClientEngine: ObservableObject {
     }
 
     /// Disconnect from the server.
+    /// This runs the blocking C++ stop on a background thread to avoid freezing the UI.
     func stop() {
         guard let ref = clientRef else { return }
-        log.info("stop: calling snapclient_stop")
-        snapclient_stop(ref)
+        log.info("stop: calling snapclient_stop (async)")
+
+        // Clear state immediately for responsive UI
         connectedHost = nil
         connectedPort = nil
+
+        // Run blocking stop on background thread
+        Task.detached {
+            snapclient_stop(ref)
+        }
     }
 
     /// Reconnect to the last server.
     func reconnect() {
         guard let host = connectedHost, let port = connectedPort else { return }
         log.info("reconnect: \(host):\(port)")
-        stop()
+        // start() already handles stopping if connected
         start(host: host, port: port)
     }
 
@@ -300,11 +317,14 @@ final class SnapClientEngine: ObservableObject {
 
     /// Test raw TCP connection (bypasses Snapcast protocol).
     /// Returns 0 on success, errno on failure. Check bridgeLogs for details.
-    func testTCP(host: String, port: Int = 1704) -> Int32 {
+    /// Runs on background thread to avoid blocking UI.
+    func testTCP(host: String, port: Int = 1704) async -> Int32 {
         log.info("testTCP: \(host):\(port)")
-        return host.withCString { cHost in
-            snapclient_test_tcp(cHost, Int32(port))
-        }
+        return await Task.detached {
+            host.withCString { cHost in
+                snapclient_test_tcp(cHost, Int32(port))
+            }
+        }.value
     }
 
     // MARK: - Private helpers

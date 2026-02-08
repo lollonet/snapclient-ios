@@ -164,6 +164,11 @@ final class SnapcastRPCClient: ObservableObject {
     // Ping interval to keep connection alive (30 seconds)
     private let pingInterval: TimeInterval = 30
 
+    // Debounce refresh to avoid storm on rapid notifications
+    private var lastRefreshTime: Date = .distantPast
+    private var pendingRefreshTask: Task<Void, Never>?
+    private let refreshDebounceInterval: TimeInterval = 0.5  // 500ms
+
     // MARK: - Connection
 
     /// Connect to the Snapserver JSON-RPC API via WebSocket.
@@ -174,9 +179,13 @@ final class SnapcastRPCClient: ObservableObject {
         connectedPort = port
 
         let urlString = "ws://\(host):\(port)/jsonrpc"
+        #if DEBUG
         print("[RPC] connecting to \(urlString)")
+        #endif
         guard let url = URL(string: urlString) else {
+            #if DEBUG
             print("[RPC] invalid URL")
+            #endif
             return
         }
 
@@ -228,9 +237,38 @@ final class SnapcastRPCClient: ObservableObject {
                 params: nil
             )
             serverStatus = result.server
+            lastRefreshTime = Date()
+            #if DEBUG
             print("[RPC] refreshStatus: \(result.server.groups.count) groups, \(result.server.allClients.count) clients")
+            #endif
         } catch {
+            #if DEBUG
             print("[RPC] refreshStatus error: \(error)")
+            #endif
+        }
+    }
+
+    /// Debounced refresh - coalesces rapid notifications into a single refresh.
+    /// Won't refresh more than once per refreshDebounceInterval.
+    private func debouncedRefresh() {
+        // Cancel any pending refresh
+        pendingRefreshTask?.cancel()
+
+        let timeSinceLastRefresh = Date().timeIntervalSince(lastRefreshTime)
+
+        if timeSinceLastRefresh >= refreshDebounceInterval {
+            // Enough time has passed, refresh immediately
+            Task {
+                await refreshStatus()
+            }
+        } else {
+            // Schedule a refresh after the remaining debounce time
+            let delay = refreshDebounceInterval - timeSinceLastRefresh
+            pendingRefreshTask = Task {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                await refreshStatus()
+            }
         }
     }
 
@@ -369,11 +407,15 @@ final class SnapcastRPCClient: ObservableObject {
     private func startReceiving() {
         receiveTask = Task { [weak self] in
             guard let self else { return }
+            #if DEBUG
             print("[RPC] startReceiving loop started")
+            #endif
             while !Task.isCancelled {
                 do {
                     guard let webSocket = await MainActor.run(body: { self.webSocket }) else {
+                        #if DEBUG
                         print("[RPC] webSocket is nil, exiting receive loop")
+                        #endif
                         break
                     }
                     let message = try await webSocket.receive()
@@ -381,14 +423,18 @@ final class SnapcastRPCClient: ObservableObject {
                         self.handleMessage(message)
                     }
                 } catch {
+                    #if DEBUG
                     print("[RPC] receive error: \(error)")
+                    #endif
                     await MainActor.run {
                         self.handleDisconnect()
                     }
                     break
                 }
             }
+            #if DEBUG
             print("[RPC] receive loop ended")
+            #endif
         }
     }
 
@@ -413,9 +459,13 @@ final class SnapcastRPCClient: ObservableObject {
                             }
                         }
                     }
+                    #if DEBUG
                     print("[RPC] ping/pong ok")
+                    #endif
                 } catch {
+                    #if DEBUG
                     print("[RPC] ping failed: \(error)")
+                    #endif
                     await MainActor.run {
                         self.handleDisconnect()
                     }
@@ -452,19 +502,25 @@ final class SnapcastRPCClient: ObservableObject {
 
     private func scheduleReconnect() {
         guard let host = connectedHost, let port = connectedPort else {
+            #if DEBUG
             print("[RPC] no host/port for reconnect")
+            #endif
             return
         }
 
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
+            #if DEBUG
             print("[RPC] scheduling reconnect in 2s...")
+            #endif
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 guard let self else { return }
+                #if DEBUG
                 print("[RPC] attempting reconnect to \(host):\(port)")
+                #endif
                 self.connect(host: host, port: port)
             }
         }
@@ -488,10 +544,8 @@ final class SnapcastRPCClient: ObservableObject {
            let cont = pendingRequests.removeValue(forKey: id) {
             cont.resume(returning: data)
         } else {
-            // Server notification — refresh status
-            Task {
-                await refreshStatus()
-            }
+            // Server notification — use debounced refresh to avoid storm
+            debouncedRefresh()
         }
     }
 }
