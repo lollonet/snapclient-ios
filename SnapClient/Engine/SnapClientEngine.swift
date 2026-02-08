@@ -293,7 +293,16 @@ final class SnapClientEngine: ObservableObject {
                     await MainActor.run {
                         log.warning("[\(instanceId)] C++ client did not reach disconnected state (state: \(currentState.rawValue)), proceeding anyway")
                     }
+                } else {
+                    await MainActor.run {
+                        log.info("[\(instanceId)] C++ client reached disconnected state, ready to connect")
+                    }
                 }
+            }
+
+            // Log before calling snapclient_start
+            await MainActor.run {
+                log.info("[\(instanceId)] calling snapclient_start for \(hostCopy):\(portCopy)")
             }
 
             let success = hostCopy.withCString { cHost in
