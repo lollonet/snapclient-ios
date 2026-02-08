@@ -26,6 +26,14 @@ final class NowPlayingManager: ObservableObject {
     private let maxArtworkCacheSize = 20
     private var currentArtworkURL: String?
 
+    // Metadata persistence to prevent flicker during reconnections
+    private var lastKnownTitle: String?
+    private var lastKnownArtist: String?
+    private var lastKnownAlbum: String?
+    private var lastKnownArtworkURL: String?
+    private var disconnectedSince: Date?
+    private let metadataClearDelay: TimeInterval = 5.0  // Only clear after 5 seconds disconnected
+
     /// URLSession with shorter timeout for artwork requests
     private lazy var artworkSession: URLSession = {
         let config = URLSessionConfiguration.default
@@ -196,24 +204,63 @@ final class NowPlayingManager: ObservableObject {
         print("[NowPlaying] updateNowPlayingInfo: state=\(engine.state.displayName) isActive=\(engine.state.isActive)")
         #endif
 
+        // Handle disconnected state with delayed clearing
         guard engine.state.isActive else {
-            // Clear now playing info when not connected
-            #if DEBUG
-            print("[NowPlaying] Clearing now playing info (not active)")
-            #endif
-            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            // Track when we became disconnected
+            if disconnectedSince == nil {
+                disconnectedSince = Date()
+            }
+
+            // Only clear metadata after being disconnected for metadataClearDelay seconds
+            if let since = disconnectedSince,
+               Date().timeIntervalSince(since) > metadataClearDelay {
+                #if DEBUG
+                print("[NowPlaying] Clearing now playing info (disconnected > \(metadataClearDelay)s)")
+                #endif
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+                lastKnownTitle = nil
+                lastKnownArtist = nil
+                lastKnownAlbum = nil
+                lastKnownArtworkURL = nil
+            } else {
+                #if DEBUG
+                print("[NowPlaying] Keeping cached metadata (disconnected < \(metadataClearDelay)s)")
+                #endif
+                // Keep showing last known info with paused state
+                if lastKnownTitle != nil || lastKnownArtist != nil {
+                    var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+                    nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+                    MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+                }
+            }
             return
         }
+
+        // We're active - clear disconnected timestamp
+        disconnectedSince = nil
 
         // Get current stream metadata
         let metadata = currentStreamMetadata()
 
+        // Use current metadata or fall back to cached
+        let title = metadata?.title ?? lastKnownTitle ?? "Snapcast"
+        let artist = metadata?.artist ?? lastKnownArtist ?? "Unknown Artist"
+        let album = metadata?.album ?? lastKnownAlbum ?? ""
+
+        // Cache valid metadata
+        if let m = metadata {
+            if let t = m.title, !t.isEmpty { lastKnownTitle = t }
+            if let a = m.artist, !a.isEmpty { lastKnownArtist = a }
+            if let al = m.album, !al.isEmpty { lastKnownAlbum = al }
+            if let art = m.artUrl, !art.isEmpty { lastKnownArtworkURL = art }
+        }
+
         var nowPlayingInfo: [String: Any] = [:]
 
         // Basic info
-        nowPlayingInfo[MPMediaItemPropertyTitle] = metadata?.title ?? "Snapcast"
-        nowPlayingInfo[MPMediaItemPropertyArtist] = metadata?.artist ?? "Unknown Artist"
-        nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = metadata?.album ?? ""
+        nowPlayingInfo[MPMediaItemPropertyTitle] = title
+        nowPlayingInfo[MPMediaItemPropertyArtist] = artist
+        nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
         nowPlayingInfo[MPMediaItemPropertyMediaType] = MPMediaType.anyAudio.rawValue
 
         // Playback state - only show rate of 1.0 if actually playing (connected + not paused)
@@ -227,16 +274,17 @@ final class NowPlayingManager: ObservableObject {
         // Set the info
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
         #if DEBUG
-        print("[NowPlaying] Set nowPlayingInfo: title='\(nowPlayingInfo[MPMediaItemPropertyTitle] ?? "nil")' artist='\(nowPlayingInfo[MPMediaItemPropertyArtist] ?? "nil")' playbackRate=\(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ?? "nil")")
+        print("[NowPlaying] Set nowPlayingInfo: title='\(title)' artist='\(artist)' playbackRate=\(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ?? "nil")")
         #endif
 
         // Load artwork if available
-        if let artUrlString = metadata?.artUrl, !artUrlString.isEmpty {
-            loadArtwork(from: artUrlString)
+        let artUrlString = metadata?.artUrl ?? lastKnownArtworkURL
+        if let artUrl = artUrlString, !artUrl.isEmpty {
+            loadArtwork(from: artUrl)
         }
 
         #if DEBUG
-        print("[NowPlaying] Updated: \(metadata?.artist ?? "?") - \(metadata?.title ?? "?")")
+        print("[NowPlaying] Updated: \(artist) - \(title)")
         #endif
     }
 
@@ -289,21 +337,25 @@ final class NowPlayingManager: ObservableObject {
             do {
                 // Use artwork session with shorter timeout
                 let (data, _) = try await artworkSession.data(from: url)
-                guard let image = UIImage(data: data) else { return }
 
-                let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                // Create UIImage on MainActor to avoid "Requesting visual style" warnings
+                await MainActor.run {
+                    guard let image = UIImage(data: data) else { return }
 
-                // Cache it with FIFO eviction
-                cacheArtwork(artwork, for: urlString)
+                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
 
-                // Update if still current
-                if currentArtworkURL == urlString {
-                    updateArtwork(artwork)
+                    // Cache it with FIFO eviction
+                    cacheArtwork(artwork, for: urlString)
+
+                    // Update if still current
+                    if currentArtworkURL == urlString {
+                        updateArtwork(artwork)
+                    }
+
+                    #if DEBUG
+                    print("[NowPlaying] Artwork loaded from \(urlString)")
+                    #endif
                 }
-
-                #if DEBUG
-                print("[NowPlaying] Artwork loaded from \(urlString)")
-                #endif
             } catch {
                 #if DEBUG
                 print("[NowPlaying] Failed to load artwork: \(error)")

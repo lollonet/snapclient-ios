@@ -537,6 +537,10 @@ final class SnapcastRPCClient: ObservableObject {
             return
         }
 
+        // Capture the target host to check against later
+        let targetHost = host
+        let targetPort = port
+
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             #if DEBUG
@@ -547,10 +551,19 @@ final class SnapcastRPCClient: ObservableObject {
 
             await MainActor.run {
                 guard let self else { return }
+
+                // Guard against ghost reconnections: only reconnect if target is still current
+                guard self.connectedHost == targetHost && self.connectedPort == targetPort else {
+                    #if DEBUG
+                    print("[RPC] skipping ghost reconnect to \(targetHost):\(targetPort) (current: \(self.connectedHost ?? "nil"):\(self.connectedPort ?? 0))")
+                    #endif
+                    return
+                }
+
                 #if DEBUG
-                print("[RPC] attempting reconnect to \(host):\(port)")
+                print("[RPC] attempting reconnect to \(targetHost):\(targetPort)")
                 #endif
-                self.connect(host: host, port: port)
+                self.connect(host: targetHost, port: targetPort)
             }
         }
     }
