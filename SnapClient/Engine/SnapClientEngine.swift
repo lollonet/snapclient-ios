@@ -283,7 +283,10 @@ final class SnapClientEngine: ObservableObject {
                 snapclient_stop(ref)
 
                 // Wait for the C++ client to fully stop (up to 2 seconds)
-                for _ in 0..<20 {
+                await MainActor.run {
+                    log.info("[\(instanceId)] entering wait loop for disconnected state")
+                }
+                for i in 0..<20 {
                     try? await Task.sleep(for: .milliseconds(100))
 
                     // Check cancellation during wait
@@ -295,6 +298,11 @@ final class SnapClientEngine: ObservableObject {
                     }
 
                     currentState = snapclient_get_state(ref)
+                    if i % 5 == 0 {  // Log every 500ms
+                        await MainActor.run {
+                            log.info("[\(instanceId)] wait loop iteration \(i), state=\(currentState.rawValue)")
+                        }
+                    }
                     if currentState == SNAPCLIENT_STATE_DISCONNECTED {
                         break
                     }
