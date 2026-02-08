@@ -68,8 +68,6 @@ struct GroupSection: View {
     @EnvironmentObject var rpcClient: SnapcastRPCClient
     @State private var groupVolume: Double = 100
     @State private var isEditingVolume = false
-    @State private var rpcError: String?
-    @State private var showRPCError = false
 
     /// Average volume of all connected clients in the group
     private var averageVolume: Int {
@@ -138,8 +136,7 @@ struct GroupSection: View {
                             try await rpcClient.setGroupMute(groupId: group.id, muted: !group.muted)
                             await rpcClient.refreshStatus()
                         } catch {
-                            rpcError = error.localizedDescription
-                            showRPCError = true
+                            rpcClient.handleError(error)
                         }
                     }
                 } label: {
@@ -148,11 +145,6 @@ struct GroupSection: View {
                 }
                 .buttonStyle(.plain)
             }
-        }
-        .alert("Error", isPresented: $showRPCError) {
-            Button("OK") { }
-        } message: {
-            Text(rpcError ?? "Unknown error")
         }
     }
 
@@ -174,8 +166,8 @@ struct GroupSection: View {
                 await rpcClient.refreshStatus()
             }
             if !errors.isEmpty {
-                rpcError = errors.joined(separator: "\n")
-                showRPCError = true
+                rpcClient.lastError = errors.joined(separator: "\n")
+                rpcClient.showError = true
             }
         }
     }
@@ -187,10 +179,6 @@ struct ClientRow: View {
     let groupId: String
     @Binding var editItem: GroupsEditItem?
     @EnvironmentObject var rpcClient: SnapcastRPCClient
-    @State private var sliderValue: Double = 0
-    @State private var isEditing = false
-    @State private var rpcError: String?
-    @State private var showRPCError = false
 
     private var isMuted: Bool {
         client.config.volume.muted
@@ -213,7 +201,7 @@ struct ClientRow: View {
                 }
                 .foregroundStyle(.primary)
 
-                Text("\(Int(isEditing ? sliderValue : Double(client.config.volume.percent)))%")
+                Text("\(client.config.volume.percent)%")
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -237,45 +225,23 @@ struct ClientRow: View {
                 .buttonStyle(.plain)
             }
 
-            Slider(
-                value: $sliderValue,
-                in: 0...100,
-                step: 1
-            ) { editing in
-                isEditing = editing
-                if !editing {
-                    // Only send when user finishes dragging
-                    Task {
-                        do {
-                            try await rpcClient.setClientVolume(
-                                clientId: client.id,
-                                volume: ClientVolume(percent: Int(sliderValue), muted: isMuted)
-                            )
-                            await rpcClient.refreshStatus()
-                        } catch {
-                            rpcError = error.localizedDescription
-                            showRPCError = true
-                        }
-                    }
+            SnapVolumeSlider(
+                serverValue: client.config.volume.percent,
+                isMuted: isMuted,
+                onCommit: { newPercent in
+                    try await rpcClient.setClientVolume(
+                        clientId: client.id,
+                        volume: ClientVolume(percent: newPercent, muted: isMuted)
+                    )
+                    await rpcClient.refreshStatus()
+                },
+                onError: { error in
+                    rpcClient.handleError(error)
                 }
-            }
-            .tint(isMuted ? .secondary : .accentColor)
-            .onAppear {
-                sliderValue = Double(client.config.volume.percent)
-            }
-            .onChange(of: client.config.volume.percent) { _, newValue in
-                if !isEditing {
-                    sliderValue = Double(newValue)
-                }
-            }
+            )
         }
         .padding(.vertical, 2)
         .opacity(isMuted ? 0.5 : 1.0)
-        .alert("Error", isPresented: $showRPCError) {
-            Button("OK") { }
-        } message: {
-            Text(rpcError ?? "Unknown error")
-        }
     }
 
     private func toggleMute() {
@@ -287,8 +253,7 @@ struct ClientRow: View {
                 )
                 await rpcClient.refreshStatus()
             } catch {
-                rpcError = error.localizedDescription
-                showRPCError = true
+                rpcClient.handleError(error)
             }
         }
     }

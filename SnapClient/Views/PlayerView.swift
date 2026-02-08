@@ -7,11 +7,6 @@ struct PlayerView: View {
     @EnvironmentObject var discovery: ServerDiscovery
     @EnvironmentObject var rpcClient: SnapcastRPCClient
 
-    @State private var volumeSlider: Double = 100
-    @State private var isEditingVolume = false
-    @State private var rpcError: String?
-    @State private var showRPCError = false
-
     /// Our unique client ID (matches what engine sets)
     private var myClientId: String {
         let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? ""
@@ -85,11 +80,6 @@ struct PlayerView: View {
             .navigationTitle("SnapForge")
             .onAppear {
                 discovery.startBrowsing()
-            }
-            .alert("Error", isPresented: $showRPCError) {
-                Button("OK") { }
-            } message: {
-                Text(rpcError ?? "Unknown error")
             }
         }
     }
@@ -222,71 +212,29 @@ struct PlayerView: View {
     }
 
     private var volumeSection: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Slider(
-                    value: $volumeSlider,
-                    in: 0...100,
-                    step: 1
-                ) { editing in
-                    isEditingVolume = editing
-                    if !editing, let client = currentClient {
-                        Task {
-                            do {
-                                try await rpcClient.setClientVolume(
-                                    clientId: client.id,
-                                    volume: ClientVolume(percent: Int(volumeSlider), muted: serverMuted)
-                                )
-                                await rpcClient.refreshStatus()
-                            } catch {
-                                rpcError = error.localizedDescription
-                                showRPCError = true
-                            }
-                        }
-                    }
-                }
-                .tint(serverMuted ? .secondary : .accentColor)
-                .accessibilityLabel("Volume")
-                .accessibilityValue("\(Int(volumeSlider)) percent")
+        SnapVolumeControl(
+            serverValue: serverVolume,
+            isMuted: serverMuted,
+            onVolumeCommit: { newPercent in
+                guard let client = currentClient else { return }
+                try await rpcClient.setClientVolume(
+                    clientId: client.id,
+                    volume: ClientVolume(percent: newPercent, muted: serverMuted)
+                )
+                await rpcClient.refreshStatus()
+            },
+            onMuteToggle: {
+                guard let client = currentClient else { return }
+                try await rpcClient.setClientVolume(
+                    clientId: client.id,
+                    volume: ClientVolume(percent: serverVolume, muted: !serverMuted)
+                )
+                await rpcClient.refreshStatus()
+            },
+            onError: { error in
+                rpcClient.handleError(error)
             }
-            .opacity(serverMuted ? 0.4 : 1.0)
-            .onAppear {
-                volumeSlider = Double(serverVolume)
-            }
-            .onChange(of: serverVolume) { _, newValue in
-                if !isEditingVolume {
-                    volumeSlider = Double(newValue)
-                }
-            }
-
-            HStack {
-                Text("\(Int(volumeSlider))%")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .accessibilityHidden(true)
-                Spacer()
-                Button {
-                    guard let client = currentClient else { return }
-                    Task {
-                        do {
-                            try await rpcClient.setClientVolume(
-                                clientId: client.id,
-                                volume: ClientVolume(percent: serverVolume, muted: !serverMuted)
-                            )
-                            await rpcClient.refreshStatus()
-                        } catch {
-                            rpcError = error.localizedDescription
-                            showRPCError = true
-                        }
-                    }
-                } label: {
-                    Image(systemName: serverMuted ? "speaker.slash.fill" : "speaker.fill")
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel(serverMuted ? "Unmute" : "Mute")
-                .disabled(currentClient == nil)
-            }
-        }
+        )
         .padding(.horizontal)
         .disabled(currentClient == nil)
     }

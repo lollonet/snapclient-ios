@@ -145,7 +145,15 @@ final class SnapcastRPCClient: ObservableObject {
     @Published private(set) var serverStatus: ServerStatus?
     @Published private(set) var isConnected = false
 
+    /// Centralized error state for RPC operations.
+    /// Views should observe this and show a single alert on ContentView.
+    @Published var lastError: String?
+    @Published var showError = false
+
     // MARK: - Private
+
+    /// Prevents multiple concurrent refresh requests
+    private var isRefreshing = false
 
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
@@ -227,10 +235,30 @@ final class SnapcastRPCClient: ObservableObject {
         pendingRequests.removeAll()
     }
 
+    // MARK: - Error handling
+
+    /// Handle and display an RPC error centrally.
+    func handleError(_ error: Error) {
+        lastError = error.localizedDescription
+        showError = true
+    }
+
     // MARK: - Server.GetStatus
 
     /// Refresh the full server status.
+    /// Protected against concurrent calls with isRefreshing flag.
     func refreshStatus() async {
+        // Prevent concurrent refresh requests
+        guard !isRefreshing else {
+            #if DEBUG
+            print("[RPC] refreshStatus: already refreshing, skipping")
+            #endif
+            return
+        }
+
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         do {
             let result: ServerStatusResult = try await call(
                 method: "Server.GetStatus",

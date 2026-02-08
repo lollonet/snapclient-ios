@@ -23,5 +23,10 @@ struct ContentView: View {
                     Label("Servers", systemImage: "network")
                 }
         }
+        .alert("Error", isPresented: $rpcClient.showError) {
+            Button("OK") { }
+        } message: {
+            Text(rpcClient.lastError ?? "Unknown error")
+        }
     }
 }
