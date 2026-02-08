@@ -112,9 +112,10 @@ final class SnapClientEngine: ObservableObject {
     /// Used to prevent socket exhaustion from rapid connection attempts.
     private var isConnecting = false
 
-    /// Last connection attempt time for debouncing rapid taps
+    /// Last connection target for debouncing rapid taps to SAME server
+    private var lastConnectionTarget: String?
     private var lastConnectionAttempt: Date = .distantPast
-    private let connectionDebounceInterval: TimeInterval = 0.5
+    private let connectionDebounceInterval: TimeInterval = 0.3
 
     // Exponential backoff for reconnection
     private var reconnectAttempts: Int = 0
@@ -195,12 +196,16 @@ final class SnapClientEngine: ObservableObject {
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
 
-        // Debounce rapid connection attempts to prevent socket exhaustion
+        // Debounce rapid taps to the SAME server only (not legitimate server switches)
+        let connectionTarget = "\(host):\(port)"
         let now = Date()
-        if now.timeIntervalSince(lastConnectionAttempt) < connectionDebounceInterval && isConnecting {
-            log.warning("[\(self.instanceId)] connection attempt debounced (too rapid)")
+        if connectionTarget == lastConnectionTarget &&
+           now.timeIntervalSince(lastConnectionAttempt) < connectionDebounceInterval &&
+           isConnecting {
+            log.warning("[\(self.instanceId)] connection attempt debounced (rapid tap to same server)")
             return
         }
+        lastConnectionTarget = connectionTarget
         lastConnectionAttempt = now
 
         // Cancel any pending auto-reconnect to prevent race condition
@@ -252,22 +257,36 @@ final class SnapClientEngine: ObservableObject {
             }
 
             // Stop any existing connection first (C++ returns false if already connected)
-            let currentState = snapclient_get_state(ref)
+            var currentState = snapclient_get_state(ref)
             if currentState != SNAPCLIENT_STATE_DISCONNECTED {
                 await MainActor.run {
-                    log.info("[\(instanceId)] stopping existing connection before starting new one")
+                    log.info("[\(instanceId)] stopping existing connection before starting new one (state: \(currentState.rawValue))")
                 }
                 snapclient_stop(ref)
 
-                // Wait for clean state transition
-                try? await Task.sleep(for: .milliseconds(150))
+                // Wait for the C++ client to fully stop (up to 2 seconds)
+                for _ in 0..<20 {
+                    try? await Task.sleep(for: .milliseconds(100))
 
-                // Check cancellation after stop - user may have switched servers again
-                guard !Task.isCancelled else {
-                    await MainActor.run {
-                        log.info("[\(instanceId)] connection cancelled after stop")
+                    // Check cancellation during wait
+                    guard !Task.isCancelled else {
+                        await MainActor.run {
+                            log.info("[\(instanceId)] connection cancelled while waiting for stop")
+                        }
+                        return
                     }
-                    return
+
+                    currentState = snapclient_get_state(ref)
+                    if currentState == SNAPCLIENT_STATE_DISCONNECTED {
+                        break
+                    }
+                }
+
+                // Log if we timed out
+                if currentState != SNAPCLIENT_STATE_DISCONNECTED {
+                    await MainActor.run {
+                        log.warning("[\(instanceId)] C++ client did not reach disconnected state (state: \(currentState.rawValue)), proceeding anyway")
+                    }
                 }
             }
 
@@ -289,12 +308,13 @@ final class SnapClientEngine: ObservableObject {
 
             // Update state on main thread
             await MainActor.run {
-                log.info("[\(instanceId)] snapclient_start returned \(success)")
-
                 if success {
+                    log.info("[\(instanceId)] snapclient_start succeeded for \(hostCopy):\(portCopy)")
                     self.connectedHost = hostCopy
                     self.connectedPort = portCopy
                     self.lastServer = (hostCopy, portCopy)
+                } else {
+                    log.error("[\(instanceId)] snapclient_start FAILED for \(hostCopy):\(portCopy) - C++ client returned false")
                 }
             }
         }
