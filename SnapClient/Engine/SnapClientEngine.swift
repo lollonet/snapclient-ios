@@ -121,8 +121,9 @@ final class SnapClientEngine: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Unique client ID based on device vendor identifier
-    private static var uniqueClientId: String {
+    /// Unique client ID based on device vendor identifier.
+    /// Shared across the app to identify this device on the Snapcast server.
+    static var uniqueClientId: String {
         let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
         return "SnapForge-\(vendorId.prefix(8))"
     }

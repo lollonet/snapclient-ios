@@ -7,10 +7,9 @@ struct PlayerView: View {
     @EnvironmentObject var discovery: ServerDiscovery
     @EnvironmentObject var rpcClient: SnapcastRPCClient
 
-    /// Our unique client ID (matches what engine sets)
+    /// Our unique client ID - uses the shared static property from SnapClientEngine
     private var myClientId: String {
-        let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? ""
-        return "SnapForge-\(vendorId.prefix(8))"
+        SnapClientEngine.uniqueClientId
     }
 
     /// Find our client in the server status by matching our unique ID.

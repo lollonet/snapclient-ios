@@ -24,11 +24,15 @@ final class NowPlayingManager: ObservableObject {
     private var artworkCache: [String: MPMediaItemArtwork] = [:]
     private var currentArtworkURL: String?
 
+    // Remote command targets for proper cleanup in deinit
+    private var playCommandTarget: Any?
+    private var pauseCommandTarget: Any?
+    private var toggleCommandTarget: Any?
 
-    /// Our unique client ID (matches what engine sets and ContentView uses)
+
+    /// Our unique client ID - uses the shared static property from SnapClientEngine
     private var myClientId: String {
-        let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? ""
-        return "SnapForge-\(vendorId.prefix(8))"
+        SnapClientEngine.uniqueClientId
     }
 
     // MARK: - Lifecycle
@@ -38,13 +42,19 @@ final class NowPlayingManager: ObservableObject {
     }
 
     deinit {
-        // Clean up remote command handlers
+        // Clean up remote command handlers - remove only our targets, not all targets
         let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.playCommand.removeTarget(nil)
-        commandCenter.pauseCommand.removeTarget(nil)
-        commandCenter.togglePlayPauseCommand.removeTarget(nil)
-
-        UIApplication.shared.endReceivingRemoteControlEvents()
+        if let target = playCommandTarget {
+            commandCenter.playCommand.removeTarget(target)
+        }
+        if let target = pauseCommandTarget {
+            commandCenter.pauseCommand.removeTarget(target)
+        }
+        if let target = toggleCommandTarget {
+            commandCenter.togglePlayPauseCommand.removeTarget(target)
+        }
+        // Note: Don't call endReceivingRemoteControlEvents here - it's started in SnapClientApp.init
+        // and should persist for the app's lifetime
     }
 
     /// Configure the manager with engine and RPC client.
@@ -59,11 +69,8 @@ final class NowPlayingManager: ObservableObject {
         print("[NowPlaying] Audio session - category: \(session.category.rawValue), mode: \(session.mode.rawValue), isOtherAudioPlaying: \(session.isOtherAudioPlaying)")
         #endif
 
-        // Start receiving remote control events (required for lock screen/Control Center)
-        UIApplication.shared.beginReceivingRemoteControlEvents()
-        #if DEBUG
-        print("[NowPlaying] beginReceivingRemoteControlEvents called")
-        #endif
+        // Note: beginReceivingRemoteControlEvents is called in SnapClientApp.init() at app launch
+        // This ensures remote events are received from the very start of the app lifecycle
 
         // Subscribe to state changes
         setupObservers()
@@ -93,22 +100,22 @@ final class NowPlayingManager: ObservableObject {
         commandCenter.seekBackwardCommand.isEnabled = false
         commandCenter.changePlaybackPositionCommand.isEnabled = false
 
-        // Add handlers
-        commandCenter.playCommand.addTarget { [weak self] _ in
+        // Add handlers and store targets for cleanup
+        playCommandTarget = commandCenter.playCommand.addTarget { [weak self] _ in
             Task { @MainActor in
                 self?.engine?.resume()
             }
             return .success
         }
 
-        commandCenter.pauseCommand.addTarget { [weak self] _ in
+        pauseCommandTarget = commandCenter.pauseCommand.addTarget { [weak self] _ in
             Task { @MainActor in
                 self?.engine?.pause()
             }
             return .success
         }
 
-        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+        toggleCommandTarget = commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
             #if DEBUG
             print("[NowPlaying] togglePlayPauseCommand received")
             #endif
@@ -187,7 +194,8 @@ final class NowPlayingManager: ObservableObject {
         // Playback state - set both rate AND explicitly mark as live stream
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = engine.isPaused ? 0.0 : 1.0
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-        // For live streams, set elapsed time to 0 (no seek bar shown)
+        // For live streams, explicitly set no seekable duration and elapsed time
+        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = 0.0
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
 
         // Set the info
