@@ -105,6 +105,7 @@ final class SnapClientEngine: ObservableObject {
     private var clientRef: SnapClientRef?
     private var reconnectTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
+    private var routeChangeObserver: NSObjectProtocol?
 
     // Exponential backoff for reconnection
     private var reconnectAttempts: Int = 0
@@ -151,8 +152,11 @@ final class SnapClientEngine: ObservableObject {
         // Cancel any pending reconnect
         reconnectTask?.cancel()
 
-        // Remove audio session observer
+        // Remove audio session observers
         if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = routeChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
 
@@ -458,12 +462,17 @@ final class SnapClientEngine: ObservableObject {
     }
 
     private func setupAudioSessionObservers() {
-        // Remove existing observer if any (prevents duplicates)
+        // Remove existing observers if any (prevents duplicates)
         if let observer = interruptionObserver {
             NotificationCenter.default.removeObserver(observer)
             interruptionObserver = nil
         }
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
+        }
 
+        // Audio interruption (phone call, Siri, etc.)
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
@@ -472,6 +481,47 @@ final class SnapClientEngine: ObservableObject {
             Task { @MainActor in
                 self?.handleAudioInterruption(notification)
             }
+        }
+
+        // Audio route change (Bluetooth disconnect, headphones unplugged, etc.)
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                self?.handleRouteChange(notification)
+            }
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        log.info("Audio route changed: \(reason.rawValue)")
+
+        switch reason {
+        case .oldDeviceUnavailable:
+            // Headphones/Bluetooth disconnected - keep playing through speaker
+            log.info("Audio device disconnected, continuing playback")
+            // Re-activate audio session to ensure audio continues
+            try? AVAudioSession.sharedInstance().setActive(true)
+
+        case .categoryChange:
+            // Category changed, might need to reconfigure
+            log.info("Audio category changed")
+
+        case .newDeviceAvailable:
+            // New device connected (e.g., Bluetooth headphones)
+            log.info("New audio device available")
+            checkForAirPlayLoop()
+
+        default:
+            break
         }
     }
 
@@ -484,18 +534,36 @@ final class SnapClientEngine: ObservableObject {
 
         switch type {
         case .began:
-            log.info("Audio interrupted")
-            break
+            log.info("Audio interrupted (e.g., phone call)")
+            // Pause playback during interruption to save resources
+            // The C++ player will output silence when paused
+            pause()
+
         case .ended:
             // Interruption ended — check if we should resume
+            log.info("Audio interruption ended")
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) && connectedHost != nil {
-                    log.info("Audio interruption ended, resuming")
-                    try? AVAudioSession.sharedInstance().setActive(true)
-                    reconnect()
+                    log.info("Resuming after interruption")
+                    // Re-activate audio session
+                    do {
+                        try AVAudioSession.sharedInstance().setActive(true)
+                        // Resume playback
+                        resume()
+                    } catch {
+                        log.error("Failed to reactivate audio session: \(error.localizedDescription)")
+                        // Try to reconnect as fallback
+                        reconnect()
+                    }
                 }
+            } else if connectedHost != nil {
+                // iOS 14.5+ may not include shouldResume, try to resume anyway
+                log.info("Attempting resume (no shouldResume flag)")
+                try? AVAudioSession.sharedInstance().setActive(true)
+                resume()
             }
+
         @unknown default:
             break
         }

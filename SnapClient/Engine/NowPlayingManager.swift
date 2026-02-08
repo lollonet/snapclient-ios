@@ -3,7 +3,6 @@ import MediaPlayer
 import Combine
 import UIKit
 import AVFoundation
-import AVKit
 
 /// Manages MPNowPlayingInfoCenter and MPRemoteCommandCenter integration.
 ///
@@ -25,11 +24,6 @@ final class NowPlayingManager: ObservableObject {
     private var artworkCache: [String: MPMediaItemArtwork] = [:]
     private var currentArtworkURL: String?
 
-    /// Silent AVPlayer to claim the "now playing" slot on iOS.
-    /// AudioQueue doesn't automatically register with the Now Playing system,
-    /// so we use a silent AVPlayer as a workaround.
-    private var silentPlayer: AVPlayer?
-    private var silentPlayerItem: AVPlayerItem?
 
     /// Our unique client ID (matches what engine sets and ContentView uses)
     private var myClientId: String {
@@ -41,64 +35,6 @@ final class NowPlayingManager: ObservableObject {
 
     init() {
         setupRemoteCommandCenter()
-        setupSilentPlayer()
-    }
-
-    /// Set up a silent AVPlayer to claim the Now Playing slot.
-    /// This is required because AudioQueue doesn't automatically register with iOS's Now Playing system.
-    private func setupSilentPlayer() {
-        // Create a silent audio composition
-        let composition = AVMutableComposition()
-        guard let audioTrack = composition.addMutableTrack(
-            withMediaType: .audio,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
-            print("[NowPlaying] Failed to create audio track for silent player")
-            return
-        }
-
-        // Create empty time range (1 second of silence)
-        let silentDuration = CMTime(seconds: 1, preferredTimescale: 44100)
-        let timeRange = CMTimeRange(start: .zero, duration: silentDuration)
-
-        // Insert empty audio (silence)
-        do {
-            try audioTrack.insertEmptyTimeRange(timeRange)
-        } catch {
-            print("[NowPlaying] Failed to insert silence: \(error)")
-            return
-        }
-
-        // Create looping player item
-        silentPlayerItem = AVPlayerItem(asset: composition)
-        silentPlayer = AVPlayer(playerItem: silentPlayerItem)
-        silentPlayer?.volume = 0 // Completely silent
-        silentPlayer?.isMuted = true
-
-        // Loop forever
-        NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime,
-            object: silentPlayerItem,
-            queue: .main
-        ) { [weak self] _ in
-            self?.silentPlayer?.seek(to: .zero)
-            self?.silentPlayer?.play()
-        }
-
-        print("[NowPlaying] Silent player configured")
-    }
-
-    /// Start the silent player to claim Now Playing status
-    private func startSilentPlayer() {
-        silentPlayer?.seek(to: .zero)
-        silentPlayer?.play()
-        print("[NowPlaying] Silent player started")
-    }
-
-    /// Stop the silent player
-    private func stopSilentPlayer() {
-        silentPlayer?.pause()
-        print("[NowPlaying] Silent player stopped")
     }
 
     deinit {
@@ -215,15 +151,11 @@ final class NowPlayingManager: ObservableObject {
         print("[NowPlaying] updateNowPlayingInfo: state=\(engine.state.displayName) isActive=\(engine.state.isActive)")
 
         guard engine.state.isActive else {
-            // Clear now playing info and stop silent player when not connected
+            // Clear now playing info when not connected
             print("[NowPlaying] Clearing now playing info (not active)")
-            stopSilentPlayer()
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
         }
-
-        // Start silent player to claim Now Playing status
-        startSilentPlayer()
 
         // Get current stream metadata
         let metadata = currentStreamMetadata()
