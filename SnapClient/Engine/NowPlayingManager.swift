@@ -314,6 +314,11 @@ final class NowPlayingManager: ObservableObject {
 
     /// Cache artwork with FIFO eviction when cache is full
     private func cacheArtwork(_ artwork: MPMediaItemArtwork, for url: String) {
+        // Remove existing entry from order list to prevent duplicates
+        if artworkCache[url] != nil {
+            artworkCacheOrder.removeAll { $0 == url }
+        }
+
         artworkCache[url] = artwork
         artworkCacheOrder.append(url)
 

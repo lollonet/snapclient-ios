@@ -158,7 +158,8 @@ final class SnapcastRPCClient: ObservableObject {
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var requestId = 0
-    private var pendingRequests: [Int: CheckedContinuation<Data, Error>] = [:]
+    /// Pending requests keyed by ID. Uses AnyHashable to support both Int and String IDs per JSON-RPC 2.0.
+    private var pendingRequests: [AnyHashable: CheckedContinuation<Data, Error>] = [:]
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var receiveTask: Task<Void, Never>?
@@ -569,15 +570,20 @@ final class SnapcastRPCClient: ObservableObject {
         // Try to match to a pending request
         // JSON-RPC 2.0 allows id to be Int or String, so handle both
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            var requestId: Int?
+            var requestId: AnyHashable?
 
             // Try Int first (most common)
             if let intId = json["id"] as? Int {
                 requestId = intId
             }
-            // Also handle String id (per JSON-RPC 2.0 spec)
-            else if let stringId = json["id"] as? String, let intId = Int(stringId) {
-                requestId = intId
+            // Also handle String id (per JSON-RPC 2.0 spec) - supports any string, not just numeric
+            else if let stringId = json["id"] as? String {
+                // First try to match as the string itself
+                requestId = stringId
+                // If no match, try converting to Int (for servers that stringify numeric IDs)
+                if pendingRequests[stringId] == nil, let intId = Int(stringId) {
+                    requestId = intId
+                }
             }
 
             if let id = requestId, let cont = pendingRequests.removeValue(forKey: id) {
