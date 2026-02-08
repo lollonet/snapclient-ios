@@ -22,7 +22,16 @@ final class NowPlayingManager: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var artworkCache: [String: MPMediaItemArtwork] = [:]
+    private var artworkCacheOrder: [String] = []  // FIFO order for eviction
+    private let maxArtworkCacheSize = 20
     private var currentArtworkURL: String?
+
+    /// URLSession with shorter timeout for artwork requests
+    private lazy var artworkSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 10  // 10 second timeout
+        return URLSession(configuration: config)
+    }()
 
     // Remote command targets for proper cleanup in deinit
     // Marked nonisolated(unsafe) because deinit is always nonisolated, but we need to
@@ -46,15 +55,18 @@ final class NowPlayingManager: ObservableObject {
 
     deinit {
         // Clean up remote command handlers - remove only our targets, not all targets
-        let commandCenter = MPRemoteCommandCenter.shared()
-        if let target = playCommandTarget {
-            commandCenter.playCommand.removeTarget(target)
-        }
-        if let target = pauseCommandTarget {
-            commandCenter.pauseCommand.removeTarget(target)
-        }
-        if let target = toggleCommandTarget {
-            commandCenter.togglePlayPauseCommand.removeTarget(target)
+        // Use MainActor.assumeIsolated to trap if unexpectedly called off main thread
+        MainActor.assumeIsolated {
+            let commandCenter = MPRemoteCommandCenter.shared()
+            if let target = playCommandTarget {
+                commandCenter.playCommand.removeTarget(target)
+            }
+            if let target = pauseCommandTarget {
+                commandCenter.pauseCommand.removeTarget(target)
+            }
+            if let target = toggleCommandTarget {
+                commandCenter.togglePlayPauseCommand.removeTarget(target)
+            }
         }
         // Note: Don't call endReceivingRemoteControlEvents here - it's started in SnapClientApp.init
         // and should persist for the app's lifetime
@@ -104,26 +116,36 @@ final class NowPlayingManager: ObservableObject {
         commandCenter.changePlaybackPositionCommand.isEnabled = false
 
         // Add handlers and store targets for cleanup
+        // Return .commandFailed if self or engine is nil to properly signal command failure
         playCommandTarget = commandCenter.playCommand.addTarget { [weak self] _ in
+            guard let self = self, self.engine != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                self?.engine?.resume()
+                self.engine?.resume()
             }
             return .success
         }
 
         pauseCommandTarget = commandCenter.pauseCommand.addTarget { [weak self] _ in
+            guard let self = self, self.engine != nil else {
+                return .commandFailed
+            }
             Task { @MainActor in
-                self?.engine?.pause()
+                self.engine?.pause()
             }
             return .success
         }
 
         toggleCommandTarget = commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+            guard let self = self, self.engine != nil else {
+                return .commandFailed
+            }
             #if DEBUG
             print("[NowPlaying] togglePlayPauseCommand received")
             #endif
             Task { @MainActor in
-                self?.engine?.togglePlayback()
+                self.engine?.togglePlayback()
             }
             return .success
         }
@@ -194,8 +216,9 @@ final class NowPlayingManager: ObservableObject {
         nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = metadata?.album ?? ""
         nowPlayingInfo[MPMediaItemPropertyMediaType] = MPMediaType.anyAudio.rawValue
 
-        // Playback state - set both rate AND explicitly mark as live stream
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = engine.isPaused ? 0.0 : 1.0
+        // Playback state - only show rate of 1.0 if actually playing (connected + not paused)
+        let isActuallyPlaying = engine.state == .playing && !engine.isPaused
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isActuallyPlaying ? 1.0 : 0.0
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
         // For live streams, explicitly set no seekable duration and elapsed time
         nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = 0.0
@@ -264,13 +287,14 @@ final class NowPlayingManager: ObservableObject {
 
         Task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                // Use artwork session with shorter timeout
+                let (data, _) = try await artworkSession.data(from: url)
                 guard let image = UIImage(data: data) else { return }
 
                 let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
 
-                // Cache it
-                artworkCache[urlString] = artwork
+                // Cache it with FIFO eviction
+                cacheArtwork(artwork, for: urlString)
 
                 // Update if still current
                 if currentArtworkURL == urlString {
@@ -285,6 +309,18 @@ final class NowPlayingManager: ObservableObject {
                 print("[NowPlaying] Failed to load artwork: \(error)")
                 #endif
             }
+        }
+    }
+
+    /// Cache artwork with FIFO eviction when cache is full
+    private func cacheArtwork(_ artwork: MPMediaItemArtwork, for url: String) {
+        artworkCache[url] = artwork
+        artworkCacheOrder.append(url)
+
+        // Evict oldest entries if cache is too large
+        while artworkCache.count > maxArtworkCacheSize, let oldest = artworkCacheOrder.first {
+            artworkCacheOrder.removeFirst()
+            artworkCache.removeValue(forKey: oldest)
         }
     }
 

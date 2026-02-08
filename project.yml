@@ -56,7 +56,7 @@ targets:
           - -framework CoreFoundation
           - -framework Foundation
         CODE_SIGN_STYLE: Automatic
-        # DEVELOPMENT_TEAM should be set locally via Xcode or .xcconfig (not in repo)
+        DEVELOPMENT_TEAM: ""  # Override locally if needed
       configs:
         Debug:
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
