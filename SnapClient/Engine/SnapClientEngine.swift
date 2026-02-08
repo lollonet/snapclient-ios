@@ -105,6 +105,7 @@ final class SnapClientEngine: ObservableObject {
     private var clientRef: SnapClientRef?
     private var reconnectTask: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
 
@@ -254,6 +255,17 @@ final class SnapClientEngine: ObservableObject {
                 return
             }
 
+            // Wait for any pending stop() task to complete to avoid mutex deadlock
+            if let pendingStop = await MainActor.run(body: { self.stopTask }) {
+                await MainActor.run {
+                    log.info("[\(instanceId)] waiting for pending stop task to complete")
+                }
+                await pendingStop.value
+                await MainActor.run {
+                    log.info("[\(instanceId)] pending stop task completed")
+                }
+            }
+
             // Get ref on MainActor since clientRef is accessed from @MainActor context
             guard let ref = await MainActor.run(body: { self.clientRef }) else {
                 await MainActor.run {
@@ -353,6 +365,12 @@ final class SnapClientEngine: ObservableObject {
             return
         }
 
+        // Debug: log call stack to find what's calling stop() unexpectedly
+        #if DEBUG
+        let callStack = Thread.callStackSymbols.prefix(10).joined(separator: "\n")
+        log.info("stop: called from:\n\(callStack)")
+        #endif
+
         log.info("stop: calling snapclient_stop (async)")
 
         // Cancel any pending reconnect
@@ -369,8 +387,11 @@ final class SnapClientEngine: ObservableObject {
         // Run blocking stop on background thread.
         // Capture self strongly to ensure clientRef survives until snapclient_stop returns,
         // preventing use-after-free if the engine is deallocated during the stop.
-        Task.detached { [self] in
+        stopTask = Task.detached { [self] in
             snapclient_stop(ref)
+            await MainActor.run {
+                self.stopTask = nil
+            }
 
             // Deactivate audio session to be a good OS citizen.
             // This allows other apps (Spotify, Podcasts) to resume correctly
