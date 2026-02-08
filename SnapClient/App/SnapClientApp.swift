@@ -39,33 +39,15 @@ struct SnapClientApp: App {
     }
 
     private func handleScenePhaseChange(_ phase: ScenePhase) {
+        // Just log phase changes - don't manipulate audio session here
+        // The audio session is managed by SnapClientEngine
         switch phase {
         case .active:
-            // App became active - ensure audio session is active
             print("[App] Scene became active")
-            do {
-                try AVAudioSession.sharedInstance().setActive(true)
-            } catch {
-                print("[App] Failed to activate audio session: \(error)")
-            }
-
         case .inactive:
-            // App becoming inactive (e.g., incoming call overlay)
             print("[App] Scene became inactive")
-
         case .background:
-            // App went to background - audio should continue
-            // Ensure audio session stays active for background playback
             print("[App] Scene went to background")
-            if engine.state.isActive {
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true)
-                    print("[App] Audio session kept active for background playback")
-                } catch {
-                    print("[App] Failed to keep audio session active: \(error)")
-                }
-            }
-
         @unknown default:
             break
         }

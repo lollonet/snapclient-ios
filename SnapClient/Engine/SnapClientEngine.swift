@@ -183,12 +183,6 @@ final class SnapClientEngine: ObservableObject {
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
 
-        // Stop any existing connection first (C++ requires DISCONNECTED state to start)
-        if state != .disconnected {
-            log.info("[\(self.instanceId)] stopping existing connection before starting new one")
-            stop()
-        }
-
         // Configure audio session on main thread (AVAudioSession requirement)
         configureAudioSession()
 
@@ -541,9 +535,8 @@ final class SnapClientEngine: ObservableObject {
         switch type {
         case .began:
             log.info("Audio interrupted (e.g., phone call)")
-            // Pause playback during interruption to save resources
-            // The C++ player will output silence when paused
-            pause()
+            // Don't pause - let the C++ player continue buffering
+            // It will output silence during interruption
 
         case .ended:
             // Interruption ended — check if we should resume
@@ -552,22 +545,8 @@ final class SnapClientEngine: ObservableObject {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) && connectedHost != nil {
                     log.info("Resuming after interruption")
-                    // Re-activate audio session
-                    do {
-                        try AVAudioSession.sharedInstance().setActive(true)
-                        // Resume playback
-                        resume()
-                    } catch {
-                        log.error("Failed to reactivate audio session: \(error.localizedDescription)")
-                        // Try to reconnect as fallback
-                        reconnect()
-                    }
+                    try? AVAudioSession.sharedInstance().setActive(true)
                 }
-            } else if connectedHost != nil {
-                // iOS 14.5+ may not include shouldResume, try to resume anyway
-                log.info("Attempting resume (no shouldResume flag)")
-                try? AVAudioSession.sharedInstance().setActive(true)
-                resume()
             }
 
         @unknown default:
