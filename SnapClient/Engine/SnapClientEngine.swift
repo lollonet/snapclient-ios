@@ -336,9 +336,17 @@ final class SnapClientEngine: ObservableObject {
     /// This runs the blocking C++ stop on a background thread to avoid freezing the UI.
     func stop() {
         guard let ref = clientRef else { return }
+
+        // If we're in the middle of a server switch, ignore external stop calls.
+        // The server switch handles stopping internally.
+        if let target = activeConnectionTarget {
+            log.info("stop: ignoring (server switch in progress to \(target))")
+            return
+        }
+
         log.info("stop: calling snapclient_stop (async)")
 
-        // Cancel any pending reconnect or in-progress connection
+        // Cancel any pending reconnect
         reconnectTask?.cancel()
         reconnectTask = nil
         connectionTask?.cancel()
