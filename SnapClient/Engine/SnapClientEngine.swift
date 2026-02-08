@@ -183,6 +183,12 @@ final class SnapClientEngine: ObservableObject {
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
 
+        // Stop any existing connection first (C++ requires DISCONNECTED state to start)
+        if state != .disconnected {
+            log.info("[\(self.instanceId)] stopping existing connection before starting new one")
+            stop()
+        }
+
         // Configure audio session on main thread (AVAudioSession requirement)
         configureAudioSession()
 
