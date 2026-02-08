@@ -25,9 +25,12 @@ final class NowPlayingManager: ObservableObject {
     private var currentArtworkURL: String?
 
     // Remote command targets for proper cleanup in deinit
-    private var playCommandTarget: Any?
-    private var pauseCommandTarget: Any?
-    private var toggleCommandTarget: Any?
+    // Marked nonisolated(unsafe) because deinit is always nonisolated, but we need to
+    // access these properties for cleanup. This is safe because NowPlayingManager is only
+    // created/destroyed on the main thread in practice.
+    nonisolated(unsafe) private var playCommandTarget: Any?
+    nonisolated(unsafe) private var pauseCommandTarget: Any?
+    nonisolated(unsafe) private var toggleCommandTarget: Any?
 
 
     /// Our unique client ID - uses the shared static property from SnapClientEngine
