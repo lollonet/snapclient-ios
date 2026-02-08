@@ -309,9 +309,9 @@ final class SnapClientEngine: ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             // Use playback category for background audio
-            // .duckOthers: reduce volume of other apps instead of mixing
-            // .overrideMutedMicrophoneInterruption: don't interrupt for muted mic
-            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            // IMPORTANT: Do NOT use .mixWithOthers or .duckOthers - these are "mixable" options
+            // that prevent the app from becoming the "Now Playing" app (per WWDC22 session 110338)
+            try session.setCategory(.playback, mode: .default)
             // Request larger IO buffer for more stable playback
             try session.setPreferredIOBufferDuration(0.01) // 10ms
 
