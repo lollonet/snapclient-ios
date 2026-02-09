@@ -85,6 +85,15 @@ IOSPlayer::IOSPlayer(boost::asio::io_context& io_context, const ClientSettings::
 
 IOSPlayer::~IOSPlayer()
 {
+    LOG(INFO, LOG_TAG) << "Destroying IOSPlayer, requesting shutdown\n";
+    shutdownRequested_.store(true);
+    active_ = false;
+
+    // Wake up worker thread if it's blocked in CFRunLoopRun
+    if (workerRunLoop_)
+    {
+        CFRunLoopStop(workerRunLoop_);
+    }
 }
 
 
@@ -101,6 +110,8 @@ void IOSPlayer::pause()
 {
     LOG(INFO, LOG_TAG) << "Pausing audio playback\n";
     g_ios_player_paused.store(true);
+
+    std::lock_guard<std::mutex> lock(queueMutex_);
     if (queue_)
     {
         AudioQueuePause(queue_);
@@ -112,6 +123,8 @@ void IOSPlayer::resume()
 {
     LOG(INFO, LOG_TAG) << "Resuming audio playback\n";
     g_ios_player_paused.store(false);
+
+    std::lock_guard<std::mutex> lock(queueMutex_);
     if (queue_)
     {
         AudioQueueStart(queue_, NULL);
@@ -123,17 +136,21 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
 {
     char* buffer = (char*)bufferRef->mAudioData;
 
-    // If paused, pause the AudioQueue to stop clock drift and don't enqueue more buffers.
-    // This prevents the Snapcast clock from drifting during long pauses.
+    // If paused, fill silence and re-enqueue (don't call AudioQueuePause here - it's not safe from callback)
     if (g_ios_player_paused.load())
     {
-        // Pause the queue if not already paused - this stops the audio clock
-        AudioQueuePause(queue);
-        // Fill with silence in case the buffer is still processed
         memset(buffer, 0, bufferRef->mAudioDataByteSize);
-        // Re-enqueue so we have buffers ready when resumed
         AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
         return;
+    }
+
+    // Check for shutdown request - signal and exit, don't cleanup from callback
+    if (!active_ || shutdownRequested_.load())
+    {
+        needsReinit_.store(true);
+        if (workerRunLoop_)
+            CFRunLoopStop(workerRunLoop_);
+        return;  // Don't enqueue buffer - let queue drain
     }
 
     // Estimate the playout delay by checking the number of frames left in the buffer
@@ -150,9 +167,13 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     {
         if (chronos::getTickCount() - lastChunkTick > 5000)
         {
-            LOG(NOTICE, LOG_TAG) << "No chunk received for 5000ms. Closing Audio Queue.\n";
-            uninitAudioQueue(queue);
-            return;
+            // CRITICAL FIX: Signal worker thread, don't call uninitAudioQueue from callback!
+            // Calling AudioQueue functions from callback context causes deadlock.
+            LOG(NOTICE, LOG_TAG) << "No chunk received for 5000ms. Signaling reinit.\n";
+            needsReinit_.store(true);
+            if (workerRunLoop_)
+                CFRunLoopStop(workerRunLoop_);
+            return;  // Don't enqueue buffer
         }
     }
     else
@@ -162,11 +183,6 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     }
 
     AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
-
-    if (!active_)
-    {
-        uninitAudioQueue(queue);
-    }
 }
 
 
@@ -180,15 +196,27 @@ void IOSPlayer::worker()
 {
     // Boost thread priority for real-time audio
     setRealtimeThreadPriority();
+    workerRunLoop_ = CFRunLoopGetCurrent();
     LOG(INFO, LOG_TAG) << "Audio worker thread started with real-time priority\n";
 
-    while (active_)
+    while (active_ && !shutdownRequested_.load())
     {
+        needsReinit_.store(false);
+
         if (pubStream_->waitForChunk(std::chrono::milliseconds(100)))
         {
             try
             {
-                if (!initAudioQueue())
+                if (initAudioQueue())
+                {
+                    // CFRunLoopRun blocks until CFRunLoopStop is called
+                    CFRunLoopRun();
+
+                    // After runloop exits, cleanup in THIS thread context (safe)
+                    // This is the critical fix - cleanup happens here, not in callback
+                    cleanupAudioQueue();
+                }
+                else
                 {
                     LOG(WARNING, LOG_TAG) << "Audio queue init failed, retrying...\n";
                 }
@@ -197,10 +225,15 @@ void IOSPlayer::worker()
             {
                 LOG(ERROR, LOG_TAG) << "Exception in worker: " << e.what() << "\n";
             }
-            chronos::sleep(100);
         }
-        chronos::sleep(100);
+
+        // Only sleep if not being asked to reinit immediately
+        if (!needsReinit_.load())
+            chronos::sleep(100);
     }
+
+    workerRunLoop_ = nullptr;
+    LOG(INFO, LOG_TAG) << "Audio worker thread exiting\n";
 }
 
 
@@ -227,8 +260,11 @@ bool IOSPlayer::initAudioQueue()
         return false;
     }
 
-    // Store queue reference for pause/resume
-    queue_ = queue;
+    // Store queue reference for pause/resume (with mutex protection)
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        queue_ = queue;
+    }
 
     status = AudioQueueCreateTimeline(queue, &timeLine_);
     if (status != noErr)
@@ -259,7 +295,10 @@ bool IOSPlayer::initAudioQueue()
         if (status != noErr)
         {
             LOG(ERROR, LOG_TAG) << "AudioQueueStart failed: " << status << "\n";
-            queue_ = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(queueMutex_);
+                queue_ = nullptr;
+            }
             AudioQueueDispose(queue, true);
             return false;
         }
@@ -269,30 +308,36 @@ bool IOSPlayer::initAudioQueue()
         LOG(INFO, LOG_TAG) << "Audio queue created but paused\n";
     }
 
-    CFRunLoopRun();
+    // Worker thread calls CFRunLoopRun after this returns
     return true;
 }
 
 
-void IOSPlayer::uninitAudioQueue(AudioQueueRef queue)
+void IOSPlayer::cleanupAudioQueue()
 {
+    // MUST be called from worker thread, never from callback!
+    std::lock_guard<std::mutex> lock(queueMutex_);
+
+    if (!queue_)
+        return;
+
+    AudioQueueRef q = queue_;
     queue_ = nullptr;
 
-    // Stop immediately (true = synchronous flush) to prevent deadlock
-    AudioQueueStop(queue, true);
+    // Stop synchronously to force-release hardware resources immediately
+    AudioQueueStop(q, true);
 
-    // Dispose timeline before queue to prevent stale references in callbacks
+    // Dispose timeline before queue to prevent stale references
     if (timeLine_ != nullptr)
     {
-        AudioQueueDisposeTimeline(queue, timeLine_);
+        AudioQueueDisposeTimeline(q, timeLine_);
         timeLine_ = nullptr;
     }
 
-    AudioQueueDispose(queue, true);
+    AudioQueueDispose(q, true);
     pubStream_->clearChunks();
 
-    // Stop the run loop to allow worker thread to exit cleanly
-    CFRunLoopStop(CFRunLoopGetCurrent());
+    LOG(DEBUG, LOG_TAG) << "Audio queue cleaned up safely from worker thread\n";
 }
 
 } // namespace player
