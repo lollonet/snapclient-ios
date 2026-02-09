@@ -68,6 +68,7 @@ struct GroupSection: View {
     @EnvironmentObject var rpcClient: SnapcastRPCClient
     @State private var groupVolume: Double = 100
     @State private var isEditingVolume = false
+    @State private var showMasterVolume = false
 
     /// Average volume of all connected clients in the group
     private var averageVolume: Int {
@@ -79,50 +80,42 @@ struct GroupSection: View {
 
     var body: some View {
         Section {
-            // Group volume slider
-            HStack(spacing: 12) {
-                Image(systemName: "speaker.wave.2")
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20)
-                Slider(
-                    value: $groupVolume,
-                    in: 0...100,
-                    step: 1
-                ) { editing in
-                    isEditingVolume = editing
-                    if !editing {
-                        setAllClientsVolume(Int(groupVolume))
+            // Master volume (only when expanded)
+            if showMasterVolume {
+                HStack(spacing: 10) {
+                    Image(systemName: "speaker.wave.2")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                    Slider(
+                        value: $groupVolume,
+                        in: 0...100,
+                        step: 1
+                    ) { editing in
+                        isEditingVolume = editing
+                        if !editing {
+                            setAllClientsVolume(Int(groupVolume))
+                        }
                     }
+                    .tint(group.muted ? .secondary : .accentColor)
                 }
-                .tint(group.muted ? .secondary : .accentColor)
-                Text("\(Int(groupVolume))%")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40)
-            }
-            .opacity(group.muted ? 0.4 : 1.0)
-            .onAppear {
-                groupVolume = Double(averageVolume)
-            }
-            .onChange(of: averageVolume) { _, newValue in
-                if !isEditingVolume {
-                    groupVolume = Double(newValue)
-                }
+                .opacity(group.muted ? 0.4 : 1.0)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            // Client rows
             ForEach(group.clients) { client in
                 ClientRow(client: client, groupId: group.id, editItem: $editItem)
             }
         } header: {
-            HStack {
+            HStack(spacing: 12) {
+                // Group name (tappable for edit)
                 Button {
                     editItem = .group(group)
                 } label: {
-                    HStack {
+                    HStack(spacing: 4) {
                         Text(group.name.isEmpty ? "Group" : group.name)
                         Image(systemName: "chevron.right")
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                 }
@@ -130,6 +123,18 @@ struct GroupSection: View {
 
                 Spacer()
 
+                // Master volume toggle
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showMasterVolume.toggle()
+                    }
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .foregroundStyle(showMasterVolume ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+
+                // Group mute
                 Button {
                     Task {
                         do {
@@ -144,6 +149,14 @@ struct GroupSection: View {
                         .foregroundStyle(group.muted ? .red : .secondary)
                 }
                 .buttonStyle(.plain)
+            }
+        }
+        .onAppear {
+            groupVolume = Double(averageVolume)
+        }
+        .onChange(of: averageVolume) { _, newValue in
+            if !isEditingVolume {
+                groupVolume = Double(newValue)
             }
         }
     }
@@ -173,7 +186,7 @@ struct GroupSection: View {
     }
 }
 
-/// Row showing a single client with volume slider.
+/// Compact row showing a single client with inline volume slider.
 struct ClientRow: View {
     let client: SnapcastClient
     let groupId: String
@@ -184,47 +197,29 @@ struct ClientRow: View {
         client.config.volume.muted
     }
 
+    private var displayName: String {
+        client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Button {
-                    editItem = .client(client, groupId: groupId)
-                } label: {
-                    HStack {
-                        Circle()
-                            .fill(client.connected ? .green : .red)
-                            .frame(width: 8, height: 8)
-                        Text(client.config.name.isEmpty ? (client.host?.name ?? client.id) : client.config.name)
-                            .font(.body)
-                        Spacer()
-                    }
+        HStack(spacing: 10) {
+            // Status + Name (tappable for edit)
+            Button {
+                editItem = .client(client, groupId: groupId)
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(client.connected ? .green : .red)
+                        .frame(width: 8, height: 8)
+                    Text(displayName)
+                        .font(.subheadline)
+                        .lineLimit(1)
                 }
-                .foregroundStyle(.primary)
-
-                Text("\(client.config.volume.percent)%")
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    toggleMute()
-                } label: {
-                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .foregroundStyle(isMuted ? .red : .secondary)
-                        .frame(width: 24)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    editItem = .client(client, groupId: groupId)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
             }
+            .foregroundStyle(.primary)
+            .frame(minWidth: 80, alignment: .leading)
 
+            // Volume slider (takes remaining space)
             SnapVolumeSlider(
                 serverValue: client.config.volume.percent,
                 isMuted: isMuted,
@@ -239,8 +234,18 @@ struct ClientRow: View {
                     rpcClient.handleError(error)
                 }
             )
+
+            // Mute button only
+            Button {
+                toggleMute()
+            } label: {
+                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .foregroundStyle(isMuted ? .red : .secondary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .opacity(isMuted ? 0.5 : 1.0)
     }
 

@@ -7,6 +7,8 @@ struct PlayerView: View {
     @EnvironmentObject var discovery: ServerDiscovery
     @EnvironmentObject var rpcClient: SnapcastRPCClient
 
+    @State private var showTechnicalDetails = false
+
     /// Our unique client ID - uses the shared static property from SnapClientEngine
     private var myClientId: String {
         SnapClientEngine.uniqueClientId
@@ -41,41 +43,32 @@ struct PlayerView: View {
         return nil
     }
 
+    /// Adaptive album art size based on screen width
+    private var adaptiveAlbumSize: CGFloat {
+        let screenWidth = UIScreen.main.bounds.width
+        return min(max(screenWidth * 0.55, 160), 280)
+    }
+
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
-                // AirPlay loop warning
-                if engine.airPlayLoopWarning {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
-                        Text("AirPlay active - possible audio loop")
-                            .font(.caption)
-                        Spacer()
-                        Toggle("", isOn: $engine.forceLocalSpeaker)
-                            .labelsHidden()
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 20) {
+                        // AirPlay loop warning
+                        airPlayWarningBanner
+
+                        // Now playing info at top
+                        nowPlayingSection
+
+                        Spacer(minLength: 16)
+
+                        // Controls card (status + volume + buttons)
+                        controlsCard
                     }
-                    .padding(8)
-                    .background(.yellow.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+                    .padding()
+                    .frame(minHeight: geometry.size.height)
                 }
-
-                // Now playing info at top
-                nowPlayingSection
-
-                Spacer()
-
-                // Status indicator
-                statusView
-
-                // Volume control
-                volumeSection
-
-                // Playback controls
-                controlButtons
-
-                Spacer()
             }
-            .padding()
             .navigationTitle("SnapForge")
             .onAppear {
                 discovery.startBrowsing()
@@ -83,25 +76,46 @@ struct PlayerView: View {
         }
     }
 
+    // MARK: - AirPlay Warning
+
+    @ViewBuilder
+    private var airPlayWarningBanner: some View {
+        if engine.airPlayLoopWarning {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                Text("AirPlay active - possible audio loop")
+                    .font(.caption)
+                Spacer()
+                Toggle("", isOn: $engine.forceLocalSpeaker)
+                    .labelsHidden()
+            }
+            .padding(8)
+            .background(.yellow.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // MARK: - Now Playing Section
+
     private var nowPlayingSection: some View {
         Group {
             if let stream = currentStream,
                let meta = stream.properties?.metadata,
                meta.title != nil || meta.artist != nil {
                 VStack(spacing: 16) {
-                    // Cover art
+                    // Cover art with adaptive sizing
                     if let artUrlString = meta.artUrl,
                        let artUrl = URL(string: artUrlString) {
                         AsyncImage(url: artUrl) { phase in
                             switch phase {
                             case .empty:
                                 ProgressView()
-                                    .frame(width: 200, height: 200)
+                                    .frame(width: adaptiveAlbumSize, height: adaptiveAlbumSize)
                             case .success(let image):
                                 image
                                     .resizable()
                                     .aspectRatio(contentMode: .fill)
-                                    .frame(width: 200, height: 200)
+                                    .frame(width: adaptiveAlbumSize, height: adaptiveAlbumSize)
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
                                     .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
                             case .failure:
@@ -119,7 +133,8 @@ struct PlayerView: View {
                         if let title = meta.title {
                             Text(title)
                                 .font(.headline)
-                                .lineLimit(1)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
                         }
                         if let artist = meta.artist {
                             Text(artist)
@@ -133,14 +148,11 @@ struct PlayerView: View {
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
                         }
-                        Text(stream.id)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
     }
@@ -150,11 +162,26 @@ struct PlayerView: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(.secondary.opacity(0.15))
             Image(systemName: "music.note")
-                .font(.system(size: 60))
+                .font(.system(size: adaptiveAlbumSize * 0.3))
                 .foregroundStyle(.secondary.opacity(0.5))
         }
-        .frame(width: 200, height: 200)
+        .frame(width: adaptiveAlbumSize, height: adaptiveAlbumSize)
     }
+
+    // MARK: - Controls Card
+
+    private var controlsCard: some View {
+        VStack(spacing: 16) {
+            statusView
+            Divider()
+            volumeSection
+            controlButtons
+        }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    // MARK: - Status View
 
     /// Server hostname from discovery
     private var serverHostname: String? {
@@ -164,51 +191,77 @@ struct PlayerView: View {
 
     private var statusView: some View {
         VStack(spacing: 8) {
-            Text(engine.state.displayName)
-                .font(.headline)
-                .foregroundStyle(engine.state.isActive ? .green : .secondary)
-
-            // Server info: FQDN and IP
-            if let host = engine.connectedHost {
-                VStack(spacing: 2) {
-                    if let hostname = serverHostname {
-                        Text(hostname)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(host)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+            // Primary: Connection state with indicator
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(engine.state.isActive ? .green : .secondary)
+                    .frame(width: 10, height: 10)
+                Text(engine.state.displayName)
+                    .font(.headline)
             }
 
-            // Client info
+            // Secondary: Server name (always visible when connected)
+            if let hostname = serverHostname {
+                Text(hostname)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Tertiary: Technical details (collapsible)
             if engine.state.isActive {
-                VStack(spacing: 4) {
-                    Divider().frame(width: 100)
-                    if let client = currentClient {
-                        Text("Client ID: \(client.id)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if !client.config.name.isEmpty {
-                            Text("Name: \(client.config.name)")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    } else {
-                        Text("Client ID: \(myClientId)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text("(not found on server)")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showTechnicalDetails.toggle()
                     }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(showTechnicalDetails ? "Hide Details" : "Details")
+                            .font(.caption)
+                        Image(systemName: showTechnicalDetails ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+
+                if showTechnicalDetails {
+                    technicalDetailsView
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Status: \(engine.state.displayName)\(engine.connectedHost.map { ", connected to \($0)" } ?? "")")
     }
+
+    private var technicalDetailsView: some View {
+        VStack(spacing: 4) {
+            if let host = engine.connectedHost {
+                Text(host)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            if let client = currentClient {
+                Text("ID: \(client.id)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                if !client.config.name.isEmpty {
+                    Text("Name: \(client.config.name)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            } else {
+                Text("ID: \(myClientId)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text("(not found on server)")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    // MARK: - Volume Section
 
     private var volumeSection: some View {
         SnapVolumeControl(
@@ -234,12 +287,13 @@ struct PlayerView: View {
                 rpcClient.handleError(error)
             }
         )
-        .padding(.horizontal)
         .disabled(currentClient == nil)
     }
 
+    // MARK: - Control Buttons
+
     private var controlButtons: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: 20) {
             if engine.state.isActive {
                 // Play/Pause button
                 Button {

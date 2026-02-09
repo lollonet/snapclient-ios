@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Reusable volume slider that handles its own editing state and syncs with server values.
 ///
@@ -36,12 +37,28 @@ struct SnapVolumeSlider: View {
             in: 0...100,
             step: 1
         ) { editing in
+            let wasEditing = isEditing
             isEditing = editing
-            if !editing {
+            if wasEditing && !editing {
+                // Haptic feedback on commit
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 commitChange()
             }
         }
         .tint(isMuted ? .secondary : .accentColor)
+        .accessibilityValue("\(Int(sliderValue)) percent")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                sliderValue = min(100, sliderValue + 5)
+                commitChange()
+            case .decrement:
+                sliderValue = max(0, sliderValue - 5)
+                commitChange()
+            @unknown default:
+                break
+            }
+        }
         .onAppear {
             sliderValue = Double(serverValue)
         }
