@@ -211,8 +211,10 @@ final class NowPlayingManager: ObservableObject {
                 disconnectedSince = Date()
 
                 // Schedule a check after the delay to clear metadata if still disconnected
+                // Capture delay value outside Task to avoid accessing self in sleep duration
+                let delay = metadataClearDelay
                 Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(self?.metadataClearDelay ?? 5.0))
+                    try? await Task.sleep(for: .seconds(delay))
                     // Re-trigger update which will clear if still disconnected
                     self?.updateNowPlayingInfo()
                 }

@@ -237,11 +237,10 @@ final class SnapClientEngine: ObservableObject {
 
         // Store the new connection task so we can cancel it if user switches again
         connectionTask = Task.detached { [self] in
-            // Ensure we clear the connection target when done (only if still ours)
-            defer {
-                Task { @MainActor in
-                    // Only clear state if we're still the active connection
-                    // This prevents cancelled tasks from interfering with new connections
+            // Helper to cleanup connection state synchronously on MainActor
+            // This avoids race conditions from fire-and-forget Task cleanup
+            @Sendable func cleanupIfStillOwner() async {
+                await MainActor.run {
                     if self.activeConnectionTarget == targetForCleanup {
                         self.activeConnectionTarget = nil
                         self.isConnecting = false
@@ -254,6 +253,7 @@ final class SnapClientEngine: ObservableObject {
                 await MainActor.run {
                     log.info("[\(instanceId)] connection cancelled before starting")
                 }
+                await cleanupIfStillOwner()
                 return
             }
 
@@ -273,6 +273,7 @@ final class SnapClientEngine: ObservableObject {
                 await MainActor.run {
                     log.error("[\(instanceId)] start: clientRef is nil!")
                 }
+                await cleanupIfStillOwner()
                 return
             }
 
@@ -314,6 +315,7 @@ final class SnapClientEngine: ObservableObject {
                 if success {
                     snapclient_stop(ref)
                 }
+                await cleanupIfStillOwner()
                 return
             }
 
@@ -328,6 +330,9 @@ final class SnapClientEngine: ObservableObject {
                     log.error("[\(instanceId)] snapclient_start FAILED for \(hostCopy):\(portCopy) - C++ client returned false")
                 }
             }
+
+            // Cleanup after successful completion
+            await cleanupIfStillOwner()
         }
     }
 
