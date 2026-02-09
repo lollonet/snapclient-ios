@@ -145,12 +145,21 @@ final class SnapcastRPCClient: ObservableObject {
     @Published private(set) var serverStatus: ServerStatus?
     @Published private(set) var isConnected = false
 
+    /// Centralized error state for RPC operations.
+    /// Views should observe this and show a single alert on ContentView.
+    @Published var lastError: String?
+    @Published var showError = false
+
     // MARK: - Private
+
+    /// Prevents multiple concurrent refresh requests
+    private var isRefreshing = false
 
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var requestId = 0
-    private var pendingRequests: [Int: CheckedContinuation<Data, Error>] = [:]
+    /// Pending requests keyed by ID. Uses AnyHashable to support both Int and String IDs per JSON-RPC 2.0.
+    private var pendingRequests: [AnyHashable: CheckedContinuation<Data, Error>] = [:]
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var receiveTask: Task<Void, Never>?
@@ -164,6 +173,11 @@ final class SnapcastRPCClient: ObservableObject {
     // Ping interval to keep connection alive (30 seconds)
     private let pingInterval: TimeInterval = 30
 
+    // Debounce refresh to avoid storm on rapid notifications
+    private var lastRefreshTime: Date = .distantPast
+    private var pendingRefreshTask: Task<Void, Never>?
+    private let refreshDebounceInterval: TimeInterval = 0.5  // 500ms
+
     // MARK: - Connection
 
     /// Connect to the Snapserver JSON-RPC API via WebSocket.
@@ -174,9 +188,13 @@ final class SnapcastRPCClient: ObservableObject {
         connectedPort = port
 
         let urlString = "ws://\(host):\(port)/jsonrpc"
+        #if DEBUG
         print("[RPC] connecting to \(urlString)")
+        #endif
         guard let url = URL(string: urlString) else {
+            #if DEBUG
             print("[RPC] invalid URL")
+            #endif
             return
         }
 
@@ -218,19 +236,68 @@ final class SnapcastRPCClient: ObservableObject {
         pendingRequests.removeAll()
     }
 
+    // MARK: - Error handling
+
+    /// Handle and display an RPC error centrally.
+    func handleError(_ error: Error) {
+        lastError = error.localizedDescription
+        showError = true
+    }
+
     // MARK: - Server.GetStatus
 
     /// Refresh the full server status.
+    /// Protected against concurrent calls with isRefreshing flag.
     func refreshStatus() async {
+        // Prevent concurrent refresh requests
+        guard !isRefreshing else {
+            #if DEBUG
+            print("[RPC] refreshStatus: already refreshing, skipping")
+            #endif
+            return
+        }
+
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         do {
             let result: ServerStatusResult = try await call(
                 method: "Server.GetStatus",
                 params: nil
             )
             serverStatus = result.server
+            lastRefreshTime = Date()
+            #if DEBUG
             print("[RPC] refreshStatus: \(result.server.groups.count) groups, \(result.server.allClients.count) clients")
+            #endif
         } catch {
+            #if DEBUG
             print("[RPC] refreshStatus error: \(error)")
+            #endif
+        }
+    }
+
+    /// Debounced refresh - coalesces rapid notifications into a single refresh.
+    /// Won't refresh more than once per refreshDebounceInterval.
+    private func debouncedRefresh() {
+        // Cancel any pending refresh
+        pendingRefreshTask?.cancel()
+
+        let timeSinceLastRefresh = Date().timeIntervalSince(lastRefreshTime)
+
+        if timeSinceLastRefresh >= refreshDebounceInterval {
+            // Enough time has passed, refresh immediately
+            Task {
+                await refreshStatus()
+            }
+        } else {
+            // Schedule a refresh after the remaining debounce time
+            let delay = refreshDebounceInterval - timeSinceLastRefresh
+            pendingRefreshTask = Task {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                await refreshStatus()
+            }
         }
     }
 
@@ -369,11 +436,15 @@ final class SnapcastRPCClient: ObservableObject {
     private func startReceiving() {
         receiveTask = Task { [weak self] in
             guard let self else { return }
+            #if DEBUG
             print("[RPC] startReceiving loop started")
+            #endif
             while !Task.isCancelled {
                 do {
                     guard let webSocket = await MainActor.run(body: { self.webSocket }) else {
+                        #if DEBUG
                         print("[RPC] webSocket is nil, exiting receive loop")
+                        #endif
                         break
                     }
                     let message = try await webSocket.receive()
@@ -381,14 +452,18 @@ final class SnapcastRPCClient: ObservableObject {
                         self.handleMessage(message)
                     }
                 } catch {
+                    #if DEBUG
                     print("[RPC] receive error: \(error)")
+                    #endif
                     await MainActor.run {
                         self.handleDisconnect()
                     }
                     break
                 }
             }
+            #if DEBUG
             print("[RPC] receive loop ended")
+            #endif
         }
     }
 
@@ -413,9 +488,13 @@ final class SnapcastRPCClient: ObservableObject {
                             }
                         }
                     }
+                    #if DEBUG
                     print("[RPC] ping/pong ok")
+                    #endif
                 } catch {
+                    #if DEBUG
                     print("[RPC] ping failed: \(error)")
+                    #endif
                     await MainActor.run {
                         self.handleDisconnect()
                     }
@@ -452,20 +531,39 @@ final class SnapcastRPCClient: ObservableObject {
 
     private func scheduleReconnect() {
         guard let host = connectedHost, let port = connectedPort else {
+            #if DEBUG
             print("[RPC] no host/port for reconnect")
+            #endif
             return
         }
 
+        // Capture the target host to check against later
+        let targetHost = host
+        let targetPort = port
+
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
+            #if DEBUG
             print("[RPC] scheduling reconnect in 2s...")
+            #endif
             try? await Task.sleep(for: .seconds(2))
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
                 guard let self else { return }
-                print("[RPC] attempting reconnect to \(host):\(port)")
-                self.connect(host: host, port: port)
+
+                // Guard against ghost reconnections: only reconnect if target is still current
+                guard self.connectedHost == targetHost && self.connectedPort == targetPort else {
+                    #if DEBUG
+                    print("[RPC] skipping ghost reconnect to \(targetHost):\(targetPort) (current: \(self.connectedHost ?? "nil"):\(self.connectedPort ?? 0))")
+                    #endif
+                    return
+                }
+
+                #if DEBUG
+                print("[RPC] attempting reconnect to \(targetHost):\(targetPort)")
+                #endif
+                self.connect(host: targetHost, port: targetPort)
             }
         }
     }
@@ -483,16 +581,32 @@ final class SnapcastRPCClient: ObservableObject {
         }
 
         // Try to match to a pending request
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let id = json["id"] as? Int,
-           let cont = pendingRequests.removeValue(forKey: id) {
-            cont.resume(returning: data)
-        } else {
-            // Server notification — refresh status
-            Task {
-                await refreshStatus()
+        // JSON-RPC 2.0 allows id to be Int or String, so handle both
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            var requestId: AnyHashable?
+
+            // Try Int first (most common)
+            if let intId = json["id"] as? Int {
+                requestId = intId
+            }
+            // Also handle String id (per JSON-RPC 2.0 spec) - supports any string, not just numeric
+            else if let stringId = json["id"] as? String {
+                // First try to match as the string itself
+                requestId = stringId
+                // If no match, try converting to Int (for servers that stringify numeric IDs)
+                if pendingRequests[stringId] == nil, let intId = Int(stringId) {
+                    requestId = intId
+                }
+            }
+
+            if let id = requestId, let cont = pendingRequests.removeValue(forKey: id) {
+                cont.resume(returning: data)
+                return
             }
         }
+
+        // Server notification — use debounced refresh to avoid storm
+        debouncedRefresh()
     }
 }
 

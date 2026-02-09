@@ -229,6 +229,13 @@ apply_ios_patches() {
         patch -p1 -N < "$patch_dir/ios-time-sync-wait.patch" || true
         cd "$ROOT_DIR"
     fi
+
+    if [ -f "$patch_dir/ios-time-provider-reset.patch" ]; then
+        info "Applying iOS time provider reset patch..."
+        cd "$dest"
+        patch -p1 -N < "$patch_dir/ios-time-provider-reset.patch" || true
+        cd "$ROOT_DIR"
+    fi
 }
 
 clone_snapcast() {

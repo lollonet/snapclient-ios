@@ -56,7 +56,7 @@ targets:
           - -framework CoreFoundation
           - -framework Foundation
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
+        DEVELOPMENT_TEAM: ""  # Override locally if needed
       configs:
         Debug:
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym

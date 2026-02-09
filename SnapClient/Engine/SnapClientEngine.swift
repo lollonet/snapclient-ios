@@ -104,7 +104,18 @@ final class SnapClientEngine: ObservableObject {
 
     private var clientRef: SnapClientRef?
     private var reconnectTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
+    private var routeChangeObserver: NSObjectProtocol?
+
+    /// Tracks if a blocking C++ connect is in progress.
+    /// Used to prevent socket exhaustion from rapid connection attempts.
+    private var isConnecting = false
+
+    /// The server target currently being connected to (nil if not connecting)
+    /// Format: "host:port"
+    private var activeConnectionTarget: String?
 
     // Exponential backoff for reconnection
     private var reconnectAttempts: Int = 0
@@ -119,8 +130,9 @@ final class SnapClientEngine: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Unique client ID based on device vendor identifier
-    private static var uniqueClientId: String {
+    /// Unique client ID based on device vendor identifier.
+    /// Shared across the app to identify this device on the Snapcast server.
+    static var uniqueClientId: String {
         let vendorId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
         return "SnapForge-\(vendorId.prefix(8))"
     }
@@ -148,11 +160,15 @@ final class SnapClientEngine: ObservableObject {
     }
 
     deinit {
-        // Cancel any pending reconnect
+        // Cancel any pending reconnect or in-progress connection
         reconnectTask?.cancel()
+        connectionTask?.cancel()
 
-        // Remove audio session observer
+        // Remove audio session observers
         if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = routeChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
 
@@ -174,10 +190,38 @@ final class SnapClientEngine: ObservableObject {
 
     /// Connect to a Snapserver and start audio playback.
     /// The connection is performed on a background thread to avoid blocking the UI.
+    /// Connection attempts are serialized and debounced to prevent socket exhaustion.
     func start(host: String, port: Int = 1704) {
         // Debug: log raw bytes of host string
         let hostBytes = Array(host.utf8)
         log.info("[\(self.instanceId)] start: host='\(host)' bytes=\(hostBytes) len=\(host.count) port=\(port) state=\(self.state.displayName)")
+
+        let connectionTarget = "\(host):\(port)"
+
+        // If we're already connecting to THIS SAME server, skip entirely
+        // This prevents multiple rapid taps from cancelling each other
+        if connectionTarget == activeConnectionTarget {
+            log.info("[\(self.instanceId)] already connecting to \(connectionTarget), skipping duplicate")
+            return
+        }
+
+        // Cancel any pending auto-reconnect to prevent race condition
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempts = 0
+
+        // Cancel any in-progress connection to a DIFFERENT server
+        if let oldTarget = activeConnectionTarget {
+            log.info("[\(self.instanceId)] cancelling connection to \(oldTarget) for switch to \(connectionTarget)")
+            connectionTask?.cancel()
+        }
+
+        // Track which server we're now connecting to
+        activeConnectionTarget = connectionTarget
+
+        // Clear connection info immediately to prevent auto-reconnect to old server
+        connectedHost = nil
+        connectedPort = nil
 
         // Configure audio session on main thread (AVAudioSession requirement)
         configureAudioSession()
@@ -186,34 +230,129 @@ final class SnapClientEngine: ObservableObject {
         let hostCopy = host
         let portCopy = port
         let instanceId = self.instanceId
+        let targetForCleanup = connectionTarget
 
-        // Perform blocking TCP connection on background thread.
-        // Note: We capture self strongly to keep clientRef valid during the blocking call.
-        // This delays deallocation until the connection attempt completes, which is safer
-        // than risking use-after-free if the engine is deallocated mid-connection.
-        Task.detached { [self] in
+        // Mark as connecting before starting
+        isConnecting = true
+
+        // Store the new connection task so we can cancel it if user switches again
+        connectionTask = Task.detached { [self] in
+            // Helper to cleanup connection state synchronously on MainActor
+            // This avoids race conditions from fire-and-forget Task cleanup
+            @Sendable func cleanupIfStillOwner() async {
+                await MainActor.run {
+                    if self.activeConnectionTarget == targetForCleanup {
+                        self.activeConnectionTarget = nil
+                        self.isConnecting = false
+                    }
+                }
+            }
+
+            // Check cancellation early
+            guard !Task.isCancelled else {
+                await MainActor.run {
+                    log.info("[\(instanceId)] connection cancelled before starting")
+                }
+                await cleanupIfStillOwner()
+                return
+            }
+
+            // Wait for any pending stop() task to complete to avoid mutex deadlock
+            // Use a 2-second timeout to prevent UI from being permanently stuck
+            if let pendingStop = await MainActor.run(body: { self.stopTask }) {
+                await MainActor.run {
+                    log.info("[\(instanceId)] waiting for pending stop task to complete (2s timeout)")
+                }
+
+                // Race between the stop task completing and a timeout
+                let completed = await withTaskGroup(of: Bool.self) { group in
+                    group.addTask {
+                        await pendingStop.value
+                        return true
+                    }
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(2))
+                        return false
+                    }
+                    let result = await group.next() ?? false
+                    group.cancelAll()
+                    return result
+                }
+
+                await MainActor.run {
+                    if completed {
+                        log.info("[\(instanceId)] pending stop task completed")
+                    } else {
+                        log.warning("[\(instanceId)] pending stop task timed out after 2s, proceeding anyway")
+                    }
+                }
+            }
+
             // Get ref on MainActor since clientRef is accessed from @MainActor context
             guard let ref = await MainActor.run(body: { self.clientRef }) else {
                 await MainActor.run {
                     log.error("[\(instanceId)] start: clientRef is nil!")
                 }
+                await cleanupIfStillOwner()
                 return
+            }
+
+            // Stop any existing connection first (C++ returns false if already connected)
+            var currentState = snapclient_get_state(ref)
+            if currentState != SNAPCLIENT_STATE_DISCONNECTED {
+                await MainActor.run {
+                    log.info("[\(instanceId)] stopping existing connection before starting new one (state: \(currentState.rawValue))")
+                }
+
+                // Call snapclient_stop - the C++ code handles this synchronously
+                // (deadlock was fixed by releasing mutex before io_thread.join())
+                snapclient_stop(ref)
+
+                // Brief wait for C++ state to settle
+                try? await Task.sleep(for: .milliseconds(50))
+                currentState = snapclient_get_state(ref)
+
+                await MainActor.run {
+                    log.info("[\(instanceId)] after stop: state=\(currentState.rawValue)")
+                }
+            }
+
+            // Log before calling snapclient_start
+            await MainActor.run {
+                log.info("[\(instanceId)] calling snapclient_start for \(hostCopy):\(portCopy)")
             }
 
             let success = hostCopy.withCString { cHost in
                 snapclient_start(ref, cHost, Int32(portCopy))
             }
 
+            // Check cancellation after connect attempt
+            guard !Task.isCancelled else {
+                await MainActor.run {
+                    log.info("[\(instanceId)] connection cancelled after start, stopping")
+                }
+                // If we connected but were cancelled, stop immediately
+                if success {
+                    snapclient_stop(ref)
+                }
+                await cleanupIfStillOwner()
+                return
+            }
+
             // Update state on main thread
             await MainActor.run {
-                log.info("[\(instanceId)] snapclient_start returned \(success)")
-
                 if success {
+                    log.info("[\(instanceId)] snapclient_start succeeded for \(hostCopy):\(portCopy)")
                     self.connectedHost = hostCopy
                     self.connectedPort = portCopy
                     self.lastServer = (hostCopy, portCopy)
+                } else {
+                    log.error("[\(instanceId)] snapclient_start FAILED for \(hostCopy):\(portCopy) - C++ client returned false")
                 }
             }
+
+            // Cleanup after successful completion
+            await cleanupIfStillOwner()
         }
     }
 
@@ -224,19 +363,64 @@ final class SnapClientEngine: ObservableObject {
     }
 
     /// Disconnect from the server.
+    /// This runs the blocking C++ stop on a background thread to avoid freezing the UI.
     func stop() {
         guard let ref = clientRef else { return }
-        log.info("stop: calling snapclient_stop")
-        snapclient_stop(ref)
+
+        // If we're in the middle of a server switch, ignore external stop calls.
+        // The server switch handles stopping internally.
+        if let target = activeConnectionTarget {
+            log.info("stop: ignoring (server switch in progress to \(target))")
+            return
+        }
+
+        // Debug: log call stack to find what's calling stop() unexpectedly
+        #if DEBUG
+        let callStack = Thread.callStackSymbols.prefix(10).joined(separator: "\n")
+        log.info("stop: called from:\n\(callStack)")
+        #endif
+
+        log.info("stop: calling snapclient_stop (async)")
+
+        // Cancel any pending reconnect
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        connectionTask?.cancel()
+        connectionTask = nil
+        reconnectAttempts = 0
+
+        // Clear state immediately for responsive UI
         connectedHost = nil
         connectedPort = nil
+
+        // Run blocking stop on background thread.
+        // Capture self strongly to ensure clientRef survives until snapclient_stop returns,
+        // preventing use-after-free if the engine is deallocated during the stop.
+        stopTask = Task.detached { [self] in
+            snapclient_stop(ref)
+            await MainActor.run {
+                self.stopTask = nil
+            }
+
+            // Deactivate audio session to be a good OS citizen.
+            // This allows other apps (Spotify, Podcasts) to resume correctly
+            // and removes our card from Control Center.
+            await MainActor.run {
+                do {
+                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    log.info("Audio session deactivated")
+                } catch {
+                    log.warning("Failed to deactivate audio session: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     /// Reconnect to the last server.
     func reconnect() {
         guard let host = connectedHost, let port = connectedPort else { return }
         log.info("reconnect: \(host):\(port)")
-        stop()
+        // start() already handles stopping if connected
         start(host: host, port: port)
     }
 
@@ -296,11 +480,14 @@ final class SnapClientEngine: ObservableObject {
 
     /// Test raw TCP connection (bypasses Snapcast protocol).
     /// Returns 0 on success, errno on failure. Check bridgeLogs for details.
-    func testTCP(host: String, port: Int = 1704) -> Int32 {
+    /// Runs on background thread to avoid blocking UI.
+    func testTCP(host: String, port: Int = 1704) async -> Int32 {
         log.info("testTCP: \(host):\(port)")
-        return host.withCString { cHost in
-            snapclient_test_tcp(cHost, Int32(port))
-        }
+        return await Task.detached {
+            host.withCString { cHost in
+                snapclient_test_tcp(cHost, Int32(port))
+            }
+        }.value
     }
 
     // MARK: - Private helpers
@@ -309,9 +496,9 @@ final class SnapClientEngine: ObservableObject {
         do {
             let session = AVAudioSession.sharedInstance()
             // Use playback category for background audio
-            // .duckOthers: reduce volume of other apps instead of mixing
-            // .overrideMutedMicrophoneInterruption: don't interrupt for muted mic
-            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            // IMPORTANT: Do NOT use .mixWithOthers or .duckOthers - these are "mixable" options
+            // that prevent the app from becoming the "Now Playing" app (per WWDC22 session 110338)
+            try session.setCategory(.playback, mode: .default)
             // Request larger IO buffer for more stable playback
             try session.setPreferredIOBufferDuration(0.01) // 10ms
 
@@ -458,12 +645,17 @@ final class SnapClientEngine: ObservableObject {
     }
 
     private func setupAudioSessionObservers() {
-        // Remove existing observer if any (prevents duplicates)
+        // Remove existing observers if any (prevents duplicates)
         if let observer = interruptionObserver {
             NotificationCenter.default.removeObserver(observer)
             interruptionObserver = nil
         }
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
+        }
 
+        // Audio interruption (phone call, Siri, etc.)
         interruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
@@ -472,6 +664,47 @@ final class SnapClientEngine: ObservableObject {
             Task { @MainActor in
                 self?.handleAudioInterruption(notification)
             }
+        }
+
+        // Audio route change (Bluetooth disconnect, headphones unplugged, etc.)
+        routeChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                self?.handleRouteChange(notification)
+            }
+        }
+    }
+
+    private func handleRouteChange(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+
+        log.info("Audio route changed: \(reason.rawValue)")
+
+        switch reason {
+        case .oldDeviceUnavailable:
+            // Headphones/Bluetooth disconnected - keep playing through speaker
+            log.info("Audio device disconnected, continuing playback")
+            // Re-activate audio session to ensure audio continues
+            try? AVAudioSession.sharedInstance().setActive(true)
+
+        case .categoryChange:
+            // Category changed, might need to reconfigure
+            log.info("Audio category changed")
+
+        case .newDeviceAvailable:
+            // New device connected (e.g., Bluetooth headphones)
+            log.info("New audio device available")
+            checkForAirPlayLoop()
+
+        default:
+            break
         }
     }
 
@@ -484,18 +717,21 @@ final class SnapClientEngine: ObservableObject {
 
         switch type {
         case .began:
-            log.info("Audio interrupted")
-            break
+            log.info("Audio interrupted (e.g., phone call)")
+            // Don't pause - let the C++ player continue buffering
+            // It will output silence during interruption
+
         case .ended:
             // Interruption ended — check if we should resume
+            log.info("Audio interruption ended")
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) && connectedHost != nil {
-                    log.info("Audio interruption ended, resuming")
+                    log.info("Resuming after interruption")
                     try? AVAudioSession.sharedInstance().setActive(true)
-                    reconnect()
                 }
             }
+
         @unknown default:
             break
         }
