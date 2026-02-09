@@ -109,6 +109,10 @@ final class SnapClientEngine: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
 
+    /// Zombie refs that timed out during stop - let them clean up in background
+    /// This prevents stuck C++ instances from blocking new connections
+    private var zombieRefs: [SnapClientRef] = []
+
     /// Tracks if a blocking C++ connect is in progress.
     /// Used to prevent socket exhaustion from rapid connection attempts.
     private var isConnecting = false
@@ -184,6 +188,13 @@ final class SnapClientEngine: ObservableObject {
             snapclient_set_settings_callback(ref, nil, nil)
             snapclient_destroy(ref)
         }
+
+        // Cleanup any zombie refs
+        for zombie in zombieRefs {
+            snapclient_set_state_callback(zombie, nil, nil)
+            snapclient_set_settings_callback(zombie, nil, nil)
+            snapclient_destroy(zombie)
+        }
     }
 
     // MARK: - Connection
@@ -236,11 +247,18 @@ final class SnapClientEngine: ObservableObject {
         isConnecting = true
 
         // Store the new connection task so we can cancel it if user switches again
-        connectionTask = Task.detached { [self] in
+        // Use weak self to avoid strong reference cycle (Task stored in self)
+        connectionTask = Task.detached { [weak self] in
+            guard let self else {
+                log.info("[\(instanceId)] connection task: self deallocated, exiting")
+                return
+            }
+
             // Helper to cleanup connection state synchronously on MainActor
             // This avoids race conditions from fire-and-forget Task cleanup
             @Sendable func cleanupIfStillOwner() async {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
                     if self.activeConnectionTarget == targetForCleanup {
                         self.activeConnectionTarget = nil
                         self.isConnecting = false
@@ -259,7 +277,7 @@ final class SnapClientEngine: ObservableObject {
 
             // Wait for any pending stop() task to complete to avoid mutex deadlock
             // Use a 2-second timeout to prevent UI from being permanently stuck
-            if let pendingStop = await MainActor.run(body: { self.stopTask }) {
+            if let pendingStop = await MainActor.run(body: { [weak self] in self?.stopTask }) {
                 await MainActor.run {
                     log.info("[\(instanceId)] waiting for pending stop task to complete (2s timeout)")
                 }
@@ -279,17 +297,19 @@ final class SnapClientEngine: ObservableObject {
                     return result
                 }
 
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     if completed {
                         log.info("[\(instanceId)] pending stop task completed")
                     } else {
-                        log.warning("[\(instanceId)] pending stop task timed out after 2s, proceeding anyway")
+                        // CRITICAL FIX: Don't reuse stuck instance - create fresh one
+                        log.warning("[\(instanceId)] pending stop task timed out after 2s, invalidating stuck instance")
+                        self?.invalidateAndRecreate()
                     }
                 }
             }
 
             // Get ref on MainActor since clientRef is accessed from @MainActor context
-            guard let ref = await MainActor.run(body: { self.clientRef }) else {
+            guard let ref = await MainActor.run(body: { [weak self] in self?.clientRef }) else {
                 await MainActor.run {
                     log.error("[\(instanceId)] start: clientRef is nil!")
                 }
@@ -340,7 +360,8 @@ final class SnapClientEngine: ObservableObject {
             }
 
             // Update state on main thread
-            await MainActor.run {
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 if success {
                     log.info("[\(instanceId)] snapclient_start succeeded for \(hostCopy):\(portCopy)")
                     self.connectedHost = hostCopy
@@ -394,12 +415,12 @@ final class SnapClientEngine: ObservableObject {
         connectedPort = nil
 
         // Run blocking stop on background thread.
-        // Capture self strongly to ensure clientRef survives until snapclient_stop returns,
-        // preventing use-after-free if the engine is deallocated during the stop.
-        stopTask = Task.detached { [self] in
+        // Use weak self to avoid strong reference cycle.
+        // Note: ref is captured by value, so it's safe even if self is deallocated.
+        stopTask = Task.detached { [weak self] in
             snapclient_stop(ref)
-            await MainActor.run {
-                self.stopTask = nil
+            await MainActor.run { [weak self] in
+                self?.stopTask = nil
             }
 
             // Deactivate audio session to be a good OS citizen.
@@ -491,6 +512,54 @@ final class SnapClientEngine: ObservableObject {
     }
 
     // MARK: - Private helpers
+
+    /// Discard stuck clientRef and create a fresh instance.
+    /// Used when stopTask times out - the old ref becomes a "zombie" that cleans up in background.
+    private func invalidateAndRecreate() {
+        log.warning("[\(self.instanceId)] invalidating stuck clientRef, creating fresh instance")
+
+        // Move current ref to zombie list
+        if let oldRef = clientRef {
+            // Unregister callbacks to prevent callbacks from zombie
+            snapclient_set_state_callback(oldRef, nil, nil)
+            snapclient_set_settings_callback(oldRef, nil, nil)
+            zombieRefs.append(oldRef)
+        }
+
+        // Create fresh instance
+        clientRef = snapclient_create()
+        guard clientRef != nil else {
+            log.error("[\(self.instanceId)] failed to create fresh snapclient instance!")
+            return
+        }
+
+        // Re-register callbacks on new instance
+        let clientId = Self.uniqueClientId
+        setName(clientId)
+        registerCallbacks()
+
+        log.info("[\(self.instanceId)] fresh clientRef created, \(self.zombieRefs.count) zombie(s) in background")
+
+        // Try to cleanup old zombies
+        cleanupZombies()
+    }
+
+    /// Cleanup zombies that have finished stopping.
+    private func cleanupZombies() {
+        zombieRefs.removeAll { ref in
+            let state = snapclient_get_state(ref)
+            if state == SNAPCLIENT_STATE_DISCONNECTED {
+                log.info("[\(self.instanceId)] destroying cleaned-up zombie ref")
+                snapclient_destroy(ref)
+                return true
+            }
+            return false
+        }
+
+        if !zombieRefs.isEmpty {
+            log.info("[\(self.instanceId)] \(self.zombieRefs.count) zombie(s) still cleaning up")
+        }
+    }
 
     private func configureAudioSession() {
         do {
