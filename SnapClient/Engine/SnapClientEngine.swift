@@ -240,10 +240,12 @@ final class SnapClientEngine: ObservableObject {
             // Ensure we clear the connection target when done (only if still ours)
             defer {
                 Task { @MainActor in
+                    // Only clear state if we're still the active connection
+                    // This prevents cancelled tasks from interfering with new connections
                     if self.activeConnectionTarget == targetForCleanup {
                         self.activeConnectionTarget = nil
+                        self.isConnecting = false
                     }
-                    self.isConnecting = false
                 }
             }
 
@@ -280,43 +282,17 @@ final class SnapClientEngine: ObservableObject {
                 await MainActor.run {
                     log.info("[\(instanceId)] stopping existing connection before starting new one (state: \(currentState.rawValue))")
                 }
+
+                // Call snapclient_stop - the C++ code handles this synchronously
+                // (deadlock was fixed by releasing mutex before io_thread.join())
                 snapclient_stop(ref)
 
-                // Wait for the C++ client to fully stop (up to 2 seconds)
+                // Brief wait for C++ state to settle
+                try? await Task.sleep(for: .milliseconds(50))
+                currentState = snapclient_get_state(ref)
+
                 await MainActor.run {
-                    log.info("[\(instanceId)] entering wait loop for disconnected state")
-                }
-                for i in 0..<20 {
-                    try? await Task.sleep(for: .milliseconds(100))
-
-                    // Check cancellation during wait
-                    guard !Task.isCancelled else {
-                        await MainActor.run {
-                            log.info("[\(instanceId)] connection cancelled while waiting for stop")
-                        }
-                        return
-                    }
-
-                    currentState = snapclient_get_state(ref)
-                    if i % 5 == 0 {  // Log every 500ms
-                        await MainActor.run {
-                            log.info("[\(instanceId)] wait loop iteration \(i), state=\(currentState.rawValue)")
-                        }
-                    }
-                    if currentState == SNAPCLIENT_STATE_DISCONNECTED {
-                        break
-                    }
-                }
-
-                // Log if we timed out
-                if currentState != SNAPCLIENT_STATE_DISCONNECTED {
-                    await MainActor.run {
-                        log.warning("[\(instanceId)] C++ client did not reach disconnected state (state: \(currentState.rawValue)), proceeding anyway")
-                    }
-                } else {
-                    await MainActor.run {
-                        log.info("[\(instanceId)] C++ client reached disconnected state, ready to connect")
-                    }
+                    log.info("[\(instanceId)] after stop: state=\(currentState.rawValue)")
                 }
             }
 

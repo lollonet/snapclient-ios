@@ -249,32 +249,46 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
 void snapclient_stop(SnapClientRef client) {
     if (!client) return;
 
-    std::lock_guard<std::recursive_mutex> lock(client->mutex);
-
+    // Check if already disconnected (atomic read, no lock needed)
     if (client->state.load() == SNAPCLIENT_STATE_DISCONNECTED) {
         return;
     }
 
-    // Stop io_context
-    if (client->work_guard) {
-        client->work_guard.reset();
-    }
-    if (client->io_context) {
-        client->io_context->stop();
-    }
+    // Phase 1: Signal shutdown (under lock)
+    {
+        std::lock_guard<std::recursive_mutex> lock(client->mutex);
 
-    // Wait for worker thread
+        // Double-check under lock
+        if (client->state.load() == SNAPCLIENT_STATE_DISCONNECTED) {
+            return;
+        }
+
+        // Stop io_context - this signals the worker thread to exit
+        if (client->work_guard) {
+            client->work_guard.reset();
+        }
+        if (client->io_context) {
+            client->io_context->stop();
+        }
+    }
+    // Lock is released here - this allows io_thread's notify_state to complete
+
+    // Phase 2: Wait for worker thread (NO lock - avoids deadlock with notify_state)
     if (client->io_thread.joinable()) {
         client->io_thread.join();
     }
 
-    // Cleanup
-    client->controller.reset();
-    client->io_context.reset();
+    // Phase 3: Cleanup (under lock)
+    {
+        std::lock_guard<std::recursive_mutex> lock(client->mutex);
+        client->controller.reset();
+        client->io_context.reset();
+    }
 
     // Reset time provider to clear stale sync data from previous server
     TimeProvider::getInstance().reset();
 
+    // Notify disconnected state (notify_state handles its own locking)
     notify_state(client, SNAPCLIENT_STATE_DISCONNECTED);
 }
 

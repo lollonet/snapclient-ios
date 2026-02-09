@@ -206,9 +206,16 @@ final class NowPlayingManager: ObservableObject {
 
         // Handle disconnected state with delayed clearing
         guard engine.state.isActive else {
-            // Track when we became disconnected
+            // Track when we became disconnected and schedule delayed clear
             if disconnectedSince == nil {
                 disconnectedSince = Date()
+
+                // Schedule a check after the delay to clear metadata if still disconnected
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(self?.metadataClearDelay ?? 5.0))
+                    // Re-trigger update which will clear if still disconnected
+                    self?.updateNowPlayingInfo()
+                }
             }
 
             // Only clear metadata after being disconnected for metadataClearDelay seconds
@@ -339,10 +346,14 @@ final class NowPlayingManager: ObservableObject {
                 let (data, _) = try await artworkSession.data(from: url)
 
                 // Create UIImage on MainActor to avoid "Requesting visual style" warnings
+                // The MPMediaItemArtwork closure may be called on any thread by the system,
+                // so we capture the image by value (immutable reference) which is thread-safe.
                 await MainActor.run {
                     guard let image = UIImage(data: data) else { return }
 
-                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    // Capture image in the closure - UIImage is immutable and thread-safe for reading
+                    let capturedImage = image
+                    let artwork = MPMediaItemArtwork(boundsSize: capturedImage.size) { _ in capturedImage }
 
                     // Cache it with FIFO eviction
                     cacheArtwork(artwork, for: urlString)
