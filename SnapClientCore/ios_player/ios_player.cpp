@@ -123,10 +123,15 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
 {
     char* buffer = (char*)bufferRef->mAudioData;
 
-    // If paused, output silence instead of actual audio
+    // If paused, pause the AudioQueue to stop clock drift and don't enqueue more buffers.
+    // This prevents the Snapcast clock from drifting during long pauses.
     if (g_ios_player_paused.load())
     {
+        // Pause the queue if not already paused - this stops the audio clock
+        AudioQueuePause(queue);
+        // Fill with silence in case the buffer is still processed
         memset(buffer, 0, bufferRef->mAudioDataByteSize);
+        // Re-enqueue so we have buffers ready when resumed
         AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
         return;
     }
@@ -272,9 +277,21 @@ bool IOSPlayer::initAudioQueue()
 void IOSPlayer::uninitAudioQueue(AudioQueueRef queue)
 {
     queue_ = nullptr;
-    AudioQueueStop(queue, false);
-    AudioQueueDispose(queue, false);
+
+    // Stop immediately (true = synchronous flush) to prevent deadlock
+    AudioQueueStop(queue, true);
+
+    // Dispose timeline before queue to prevent stale references in callbacks
+    if (timeLine_ != nullptr)
+    {
+        AudioQueueDisposeTimeline(queue, timeLine_);
+        timeLine_ = nullptr;
+    }
+
+    AudioQueueDispose(queue, true);
     pubStream_->clearChunks();
+
+    // Stop the run loop to allow worker thread to exit cleanly
     CFRunLoopStop(CFRunLoopGetCurrent());
 }
 

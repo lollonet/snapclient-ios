@@ -258,13 +258,33 @@ final class SnapClientEngine: ObservableObject {
             }
 
             // Wait for any pending stop() task to complete to avoid mutex deadlock
+            // Use a 2-second timeout to prevent UI from being permanently stuck
             if let pendingStop = await MainActor.run(body: { self.stopTask }) {
                 await MainActor.run {
-                    log.info("[\(instanceId)] waiting for pending stop task to complete")
+                    log.info("[\(instanceId)] waiting for pending stop task to complete (2s timeout)")
                 }
-                await pendingStop.value
+
+                // Race between the stop task completing and a timeout
+                let completed = await withTaskGroup(of: Bool.self) { group in
+                    group.addTask {
+                        await pendingStop.value
+                        return true
+                    }
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(2))
+                        return false
+                    }
+                    let result = await group.next() ?? false
+                    group.cancelAll()
+                    return result
+                }
+
                 await MainActor.run {
-                    log.info("[\(instanceId)] pending stop task completed")
+                    if completed {
+                        log.info("[\(instanceId)] pending stop task completed")
+                    } else {
+                        log.warning("[\(instanceId)] pending stop task timed out after 2s, proceeding anyway")
+                    }
                 }
             }
 

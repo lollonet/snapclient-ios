@@ -74,7 +74,7 @@ private:
     size_t frames_;
     size_t buff_size_;
     AudioQueueRef queue_{nullptr};
-    AudioQueueTimelineRef timeLine_;
+    AudioQueueTimelineRef timeLine_{nullptr};  // Initialize to nullptr for safe lifecycle
     std::shared_ptr<Stream> pubStream_;
     uint64_t lastChunkTick{0};
 };
