@@ -1,6 +1,6 @@
 --- a/client/time_provider.hpp
 +++ b/client/time_provider.hpp
-@@ -54,6 +54,12 @@ public:
+@@ -54,6 +54,19 @@ public:
      /// Set diff from round-trip-times client-to-server and server-to-client
      void setDiff(const tv& c2s, const tv& s2c);
 
@@ -8,6 +8,13 @@
 +    inline bool isSynced() const
 +    {
 +        return !diffBuffer_.empty();
++    }
++
++    /// Reset time sync state (call when disconnecting)
++    inline void reset()
++    {
++        diffBuffer_.clear();
++        diffToServer_ = 0;
 +    }
 +
      /// @return time diff to server
