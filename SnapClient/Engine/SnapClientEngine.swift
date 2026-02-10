@@ -203,22 +203,30 @@ final class SnapClientEngine: ObservableObject {
         // Unregister log callback
         snapclient_set_log_callback(nil, nil)
 
+        // CRITICAL: Block callbacks SYNCHRONOUSLY before deinit returns.
+        // This sets `destroying = true` on each client, which causes CallbackGuard
+        // to reject new callbacks. This prevents use-after-free where a callback
+        // fires after Swift deallocates this object but before Task.detached runs.
+        if let ref = clientRef {
+            snapclient_begin_destroy(ref)
+        }
+        for zombie in zombieRefs {
+            snapclient_begin_destroy(zombie)
+        }
+
         // Capture refs for background cleanup (deinit is nonisolated)
         // Include ALL zombie refs to prevent Engine Ghosting
         let ref = clientRef
         let zombies = zombieRefs
 
         // Background cleanup - deinit returns immediately, never blocks
-        // This ensures C++ cleanup completes even if Swift object is deallocated
+        // The actual destruction can take time (waiting for io_thread), but
+        // callbacks are already blocked by begin_destroy above.
         Task.detached {
             if let ref {
-                snapclient_set_state_callback(ref, nil, nil)
-                snapclient_set_settings_callback(ref, nil, nil)
                 snapclient_destroy(ref)
             }
             for zombie in zombies {
-                snapclient_set_state_callback(zombie, nil, nil)
-                snapclient_set_settings_callback(zombie, nil, nil)
                 snapclient_destroy(zombie)
             }
         }
@@ -584,35 +592,52 @@ final class SnapClientEngine: ObservableObject {
     /// Also enforces max zombie limit to prevent unbounded growth.
     /// All C function calls happen in background to never block MainActor.
     private func cleanupZombies() {
-        // Collect zombies ready for cleanup (disconnected state)
-        let zombiesToDestroy = zombieRefs.filter { ref in
-            snapclient_get_state(ref) == SNAPCLIENT_STATE_DISCONNECTED
-        }
-        zombieRefs.removeAll { zombiesToDestroy.contains($0) }
+        guard !zombieRefs.isEmpty else { return }
 
-        // Destroy in background to never block MainActor
-        for zombie in zombiesToDestroy {
-            let instanceId = self.instanceId
-            Task.detached {
+        // Capture current zombie list and clean up in background.
+        // This ensures MainActor NEVER calls C functions on zombie refs.
+        let currentZombies = zombieRefs
+        let maxZombies = maxZombieRefs
+        let instanceId = self.instanceId
+
+        Task.detached { [weak self] in
+            // Check state OFF MainActor - this is the design invariant fix
+            var zombiesToDestroy: [SnapClientRef] = []
+            var zombiesToKeep: [SnapClientRef] = []
+
+            for zombie in currentZombies {
+                if snapclient_get_state(zombie) == SNAPCLIENT_STATE_DISCONNECTED {
+                    zombiesToDestroy.append(zombie)
+                } else {
+                    zombiesToKeep.append(zombie)
+                }
+            }
+
+            // Destroy disconnected zombies
+            for zombie in zombiesToDestroy {
                 log.info("[\(instanceId)] destroying cleaned-up zombie ref")
                 snapclient_destroy(zombie)
             }
-        }
 
-        // Force-destroy oldest if limit exceeded (also in background)
-        while zombieRefs.count > maxZombieRefs {
-            let oldest = zombieRefs.removeFirst()
-            let instanceId = self.instanceId
-            Task.detached {
+            // Force-destroy oldest if limit exceeded
+            while zombiesToKeep.count > maxZombies {
+                let oldest = zombiesToKeep.removeFirst()
                 log.warning("[\(instanceId)] force-destroying oldest zombie (limit exceeded)")
                 snapclient_set_state_callback(oldest, nil, nil)
                 snapclient_set_settings_callback(oldest, nil, nil)
                 snapclient_destroy(oldest)
             }
-        }
 
-        if !zombieRefs.isEmpty {
-            log.info("[\(self.instanceId)] \(self.zombieRefs.count) zombie(s) still cleaning up")
+            // Update Swift state on MainActor
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                // Replace zombie list with those still pending
+                self.zombieRefs = zombiesToKeep
+
+                if !self.zombieRefs.isEmpty {
+                    log.info("[\(instanceId)] \(self.zombieRefs.count) zombie refs still pending cleanup")
+                }
+            }
         }
 
         updateDiagnostics()

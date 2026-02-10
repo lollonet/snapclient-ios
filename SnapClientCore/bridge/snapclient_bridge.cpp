@@ -200,10 +200,20 @@ SnapClientRef snapclient_create(void) {
     return new (std::nothrow) SnapClient();
 }
 
+void snapclient_begin_destroy(SnapClientRef client) {
+    if (!client) return;
+
+    // Synchronously set destroying flag to block new callbacks.
+    // This is safe to call from any thread including MainActor.
+    // The flag is checked by CallbackGuard before allowing callback execution.
+    client->destroying.store(true, std::memory_order_release);
+    BLOG_DEBUG("snapclient_begin_destroy: destroying flag set");
+}
+
 void snapclient_destroy(SnapClientRef client) {
     if (!client) return;
 
-    // Phase 1: Signal that destroy is starting
+    // Phase 1: Signal that destroy is starting (idempotent if already called)
     client->destroying.store(true, std::memory_order_release);
 
     // Phase 2: Wait for in-flight callbacks to complete (with timeout)

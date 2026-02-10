@@ -140,8 +140,19 @@ void IOSPlayer::resume()
 
 void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRef)
 {
-    // Mark callback as active (for lifecycle guard)
-    callbackActive_.store(true, std::memory_order_release);
+    // RAII guard to mark callback active and signal completion on exit.
+    // This ensures cleanupAudioQueue can wait for callback to fully exit.
+    struct CallbackActiveGuard {
+        IOSPlayer* player;
+        CallbackActiveGuard(IOSPlayer* p) : player(p) {
+            player->callbackActive_.store(true, std::memory_order_release);
+        }
+        ~CallbackActiveGuard() {
+            player->callbackActive_.store(false, std::memory_order_release);
+            // Signal condition variable that callback has exited
+            player->callbackDone_.notify_all();
+        }
+    } activeGuard(this);
 
     // Capture generation to detect queue invalidation
     const uint32_t myGeneration = callbackGeneration_.load(std::memory_order_acquire);
@@ -153,8 +164,7 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     {
         memset(buffer, 0, bufferRef->mAudioDataByteSize);
         AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
-        callbackActive_.store(false, std::memory_order_release);
-        return;
+        return;  // activeGuard destructor signals callbackDone_
     }
 
     // Check shutdown - use atomic load, never check non-atomic active_
@@ -164,7 +174,6 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
         // Load runloop ref atomically
         CFRunLoopRef rl = workerRunLoop_.load(std::memory_order_acquire);
         if (rl) CFRunLoopStop(rl);
-        callbackActive_.store(false, std::memory_order_release);
         return;  // Don't enqueue buffer - let queue drain
     }
 
@@ -172,7 +181,6 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     if (myGeneration != callbackGeneration_.load(std::memory_order_acquire))
     {
         // Queue was invalidated while we were running
-        callbackActive_.store(false, std::memory_order_release);
         return;
     }
 
@@ -203,7 +211,6 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
             needsReinit_.store(true, std::memory_order_relaxed);
             CFRunLoopRef rl = workerRunLoop_.load(std::memory_order_acquire);
             if (rl) CFRunLoopStop(rl);
-            callbackActive_.store(false, std::memory_order_release);
             return;  // Don't enqueue buffer
         }
     }
@@ -214,7 +221,7 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     }
 
     AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
-    callbackActive_.store(false, std::memory_order_release);
+    // activeGuard destructor signals callbackDone_
 }
 
 
@@ -376,22 +383,30 @@ void IOSPlayer::cleanupAudioQueue()
     AudioQueueRef q = queue_;
     queue_ = nullptr;
 
-    // Synchronous stop - waits for all pending callbacks to complete
+    // Synchronous stop with inImmediate=true:
+    // Apple docs: "Stops the audio queue synchronously. The function returns
+    // when the audio queue has stopped running."
+    // After this returns, no new callbacks will be scheduled.
     AudioQueueStop(q, true);
 
-    // Step 3: Spin-wait for callback to fully exit (should be fast after Stop)
-    int spins = 0;
-    while (callbackActive_.load(std::memory_order_acquire) && spins < 1000)
+    // Step 3: Wait for callback to fully exit using condition variable.
+    // AudioQueueStop(q, true) should guarantee no callbacks are running,
+    // but we use a bounded wait as a safety net with logging.
     {
-        std::this_thread::yield();
-        ++spins;
-    }
-    if (spins == 1000)
-    {
-        LOG(WARNING, LOG_TAG) << "Callback still active after 1000 spins\n";
+        std::unique_lock<std::mutex> cvLock(callbackMutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+        if (!callbackDone_.wait_until(cvLock, deadline, [this] {
+            return !callbackActive_.load(std::memory_order_acquire);
+        }))
+        {
+            // This should never happen if AudioQueueStop works correctly.
+            // Log but proceed - the callback will see stale generation and exit.
+            LOG(ERROR, LOG_TAG) << "Callback still active after 500ms wait - proceeding anyway. "
+                                << "This indicates AudioQueueStop did not drain callbacks.\n";
+        }
     }
 
-    // Step 4: Now safe to dispose timeline
+    // Step 4: Now safe to dispose timeline - callback has exited
     AudioQueueTimelineRef tl = timeLine_.exchange(nullptr, std::memory_order_acq_rel);
     if (tl)
     {

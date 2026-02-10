@@ -30,6 +30,7 @@
 
 // Standard headers
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 
 namespace player
@@ -88,6 +89,10 @@ private:
     std::atomic<AudioQueueTimelineRef> timeLine_{nullptr};   // Timeline (atomic for callback access)
     std::atomic<bool> callbackActive_{false};                // True while callback is executing
     std::atomic<uint32_t> callbackGeneration_{0};            // Incremented on each queue init/cleanup
+
+    // Synchronization for callback completion - used by cleanup to wait for callback exit
+    std::mutex callbackMutex_;
+    std::condition_variable callbackDone_;
 };
 
 } // namespace player
