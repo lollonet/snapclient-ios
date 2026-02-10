@@ -6,6 +6,10 @@ options:
   xcodeVersion: "15.0"
   createIntermediateGroups: true
 
+configFiles:
+  Debug: Local.xcconfig
+  Release: Local.xcconfig
+
 settings:
   SWIFT_VERSION: "5.9"
   CLANG_CXX_LANGUAGE_STANDARD: c++17
@@ -56,7 +60,8 @@ targets:
           - -framework CoreFoundation
           - -framework Foundation
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""  # Override locally if needed
+        DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+        CODE_SIGN_IDENTITY: "Apple Development"
       configs:
         Debug:
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym

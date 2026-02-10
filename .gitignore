@@ -58,3 +58,4 @@ fastlane/test_output
 
 # Claude Code scratchpad
 scratchpad/
+Local.xcconfig
