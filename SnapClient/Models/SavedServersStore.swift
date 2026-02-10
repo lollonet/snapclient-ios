@@ -48,8 +48,13 @@ final class SavedServersStore: ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(servers) {
+        do {
+            let data = try JSONEncoder().encode(servers)
             UserDefaults.standard.set(data, forKey: Self.key)
+        } catch {
+            #if DEBUG
+            print("[SavedServers] Failed to save: \(error)")
+            #endif
         }
     }
 }

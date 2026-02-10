@@ -60,7 +60,8 @@ struct AddServerSheet: View {
 
     private func saveServer() {
         let trimmedHost = host.trimmingCharacters(in: .whitespaces)
-        let port = Int(portString) ?? 1704
+        // Validate port range (1-65535), default to 1704 if invalid
+        let port = Int(portString).map { max(1, min(65535, $0)) } ?? 1704
 
         if let existing = editingServer {
             // Update existing
