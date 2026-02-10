@@ -286,10 +286,14 @@ final class NowPlayingManager: ObservableObject {
         print("[NowPlaying] Set nowPlayingInfo: title='\(title)' artist='\(artist)' playbackRate=\(nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] ?? "nil")")
         #endif
 
-        // Load artwork if available
-        let artUrlString = metadata?.artUrl ?? lastKnownArtworkURL
-        if let artUrl = artUrlString, !artUrl.isEmpty {
-            loadArtwork(from: artUrl)
+        // Load artwork: prefer embedded (base64) over URL
+        if let artData = metadata?.artData, !artData.isEmpty {
+            loadEmbeddedArtwork(base64: artData)
+        } else {
+            let artUrlString = metadata?.artUrl ?? lastKnownArtworkURL
+            if let artUrl = artUrlString, !artUrl.isEmpty {
+                loadArtwork(from: artUrl)
+            }
         }
 
         #if DEBUG
@@ -329,6 +333,65 @@ final class NowPlayingManager: ObservableObject {
 
     // MARK: - Artwork Loading
 
+    /// Load artwork from embedded base64 data (from MPD, AirPlay, etc.)
+    private func loadEmbeddedArtwork(base64: String) {
+        // Use hash of base64 as cache key (base64 itself is too long)
+        let cacheKey = "embedded:\(base64.hashValue)"
+
+        // Check cache first
+        if let cached = artworkCache[cacheKey] {
+            updateArtwork(cached)
+            return
+        }
+
+        // Don't reload if already loading this artwork
+        guard cacheKey != currentArtworkURL else { return }
+        currentArtworkURL = cacheKey
+
+        // Decode base64 on background thread
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let data = Data(base64Encoded: base64),
+                  let image = UIImage(data: data) else {
+                #if DEBUG
+                print("[NowPlaying] Failed to decode embedded artwork")
+                #endif
+                return
+            }
+
+            // Decompress image
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = image.scale
+            format.opaque = false
+
+            let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+            let decompressedImage = renderer.image { context in
+                image.draw(at: .zero)
+            }
+
+            let finalImage: UIImage
+            if #available(iOS 15.0, *) {
+                finalImage = await decompressedImage.byPreparingForDisplay() ?? decompressedImage
+            } else {
+                finalImage = decompressedImage
+            }
+
+            await MainActor.run { [weak self, cacheKey] in
+                guard let self else { return }
+                let artwork = MPMediaItemArtwork(boundsSize: finalImage.size) { _ in finalImage }
+                cacheArtwork(artwork, for: cacheKey)
+
+                if currentArtworkURL == cacheKey {
+                    updateArtwork(artwork)
+                }
+
+                #if DEBUG
+                print("[NowPlaying] Loaded embedded artwork")
+                #endif
+            }
+        }
+    }
+
+    /// Load artwork from URL (fallback when embedded not available)
     private func loadArtwork(from urlString: String) {
         // Convert HTTP to HTTPS to comply with App Transport Security
         // coverartarchive.org and most artwork servers support HTTPS
