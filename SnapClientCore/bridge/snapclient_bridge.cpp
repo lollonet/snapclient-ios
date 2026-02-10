@@ -17,6 +17,8 @@
 
 // Standard headers
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -97,6 +99,11 @@ using work_guard_t = boost::asio::executor_work_guard<boost::asio::io_context::e
 struct SnapClient {
     std::recursive_mutex mutex;
 
+    // Lifecycle guard for callbacks
+    std::atomic<int> callbacksInFlight{0};      // Count of callbacks currently executing
+    std::atomic<bool> destroying{false};        // Set when destroy begins
+    std::condition_variable_any callbacksDone;  // Signaled when callbacksInFlight hits 0
+
     // Boost.Asio io_context - runs the networking and timers
     std::unique_ptr<boost::asio::io_context> io_context;
     std::unique_ptr<work_guard_t> work_guard;
@@ -128,10 +135,41 @@ struct SnapClient {
     void* settings_ctx = nullptr;
 };
 
+/// RAII guard for callback scope - prevents callbacks during destroy
+struct CallbackGuard {
+    SnapClient* client;
+    bool valid;
+
+    CallbackGuard(SnapClient* c) : client(c), valid(false) {
+        if (!c || c->destroying.load(std::memory_order_acquire)) return;
+        c->callbacksInFlight.fetch_add(1, std::memory_order_acq_rel);
+        // Double-check after increment (prevents race with destroy)
+        if (c->destroying.load(std::memory_order_acquire)) {
+            c->callbacksInFlight.fetch_sub(1, std::memory_order_acq_rel);
+            c->callbacksDone.notify_all();
+            return;
+        }
+        valid = true;
+    }
+
+    ~CallbackGuard() {
+        if (valid) {
+            if (client->callbacksInFlight.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                client->callbacksDone.notify_all();
+            }
+        }
+    }
+
+    explicit operator bool() const { return valid; }
+};
+
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 static void notify_state(SnapClient* c, SnapClientState new_state) {
     c->state.store(new_state);
+
+    CallbackGuard guard(c);
+    if (!guard) return;  // Client being destroyed
 
     // Copy callback and context inside lock to avoid race with callback modification
     SnapClientStateCallback cb = nullptr;
@@ -162,8 +200,35 @@ SnapClientRef snapclient_create(void) {
     return new (std::nothrow) SnapClient();
 }
 
+void snapclient_begin_destroy(SnapClientRef client) {
+    if (!client) return;
+
+    // Synchronously set destroying flag to block new callbacks.
+    // This is safe to call from any thread including MainActor.
+    // The flag is checked by CallbackGuard before allowing callback execution.
+    client->destroying.store(true, std::memory_order_release);
+    BLOG_DEBUG("snapclient_begin_destroy: destroying flag set");
+}
+
 void snapclient_destroy(SnapClientRef client) {
     if (!client) return;
+
+    // Phase 1: Signal that destroy is starting (idempotent if already called)
+    client->destroying.store(true, std::memory_order_release);
+
+    // Phase 2: Wait for in-flight callbacks to complete (with timeout)
+    {
+        std::unique_lock<std::recursive_mutex> lock(client->mutex);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (client->callbacksInFlight.load(std::memory_order_acquire) > 0) {
+            if (client->callbacksDone.wait_until(lock, deadline) == std::cv_status::timeout) {
+                BLOG_WARN("snapclient_destroy: timeout waiting for callbacks, proceeding anyway");
+                break;
+            }
+        }
+    }
+
+    // Phase 3: Stop and cleanup
     snapclient_stop(client);
     delete client;
 }
@@ -178,6 +243,11 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
     if (client->state.load() != SNAPCLIENT_STATE_DISCONNECTED) {
         return false; // already running
     }
+
+    // HARD RESET: Clear TimeProvider's stale clock data from previous server
+    // This prevents clock drift issues (-1.68e+08ms) when switching servers
+    TimeProvider::getInstance().reset();
+    BLOG_INFO("TimeProvider reset for new connection");
 
     client->host = host;
     client->port = port;
@@ -379,6 +449,8 @@ void snapclient_set_state_callback(SnapClientRef client,
                                    SnapClientStateCallback callback,
                                    void* ctx) {
     if (!client) return;
+    if (client->destroying.load(std::memory_order_acquire)) return;  // Reject during destroy
+
     std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->state_cb = callback;
     client->state_ctx = ctx;
@@ -388,6 +460,8 @@ void snapclient_set_settings_callback(SnapClientRef client,
                                       SnapClientSettingsCallback callback,
                                       void* ctx) {
     if (!client) return;
+    if (client->destroying.load(std::memory_order_acquire)) return;  // Reject during destroy
+
     std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->settings_cb = callback;
     client->settings_ctx = ctx;

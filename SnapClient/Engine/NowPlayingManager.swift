@@ -347,14 +347,35 @@ final class NowPlayingManager: ObservableObject {
                 // Use artwork session with shorter timeout
                 let (data, _) = try await artworkSession.data(from: url)
 
-                // Create UIImage on MainActor to avoid "Requesting visual style" warnings
-                // The MPMediaItemArtwork closure may be called on any thread by the system,
-                // so we capture the image by value (immutable reference) which is thread-safe.
-                await MainActor.run {
-                    guard let image = UIImage(data: data) else { return }
+                // PERFORMANCE FIX: Decompress image on background thread
+                // This prevents UI hitches from 4K album art blocking the Main Actor
+                let preparedImage: UIImage? = await Task.detached(priority: .userInitiated) {
+                    guard let image = UIImage(data: data) else { return nil }
 
-                    // Capture image in the closure - UIImage is immutable and thread-safe for reading
-                    let capturedImage = image
+                    // Force decompression by drawing into a graphics context
+                    // This ensures the expensive JPEG/PNG decode happens off MainActor
+                    let format = UIGraphicsImageRendererFormat()
+                    format.scale = image.scale
+                    format.opaque = false
+
+                    let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+                    let decompressedImage = renderer.image { context in
+                        image.draw(at: .zero)
+                    }
+
+                    // Use preparingForDisplay for additional optimization if available
+                    if #available(iOS 15.0, *) {
+                        return await decompressedImage.byPreparingForDisplay()
+                    }
+                    return decompressedImage
+                }.value
+
+                guard let preparedImage else { return }
+
+                // Now on MainActor, the image is fully decoded and ready
+                await MainActor.run {
+                    // Capture prepared image - it's already decompressed
+                    let capturedImage = preparedImage
                     let artwork = MPMediaItemArtwork(boundsSize: capturedImage.size) { _ in capturedImage }
 
                     // Cache it with FIFO eviction
@@ -366,7 +387,7 @@ final class NowPlayingManager: ObservableObject {
                     }
 
                     #if DEBUG
-                    print("[NowPlaying] Artwork loaded from \(urlString)")
+                    print("[NowPlaying] Artwork loaded and decompressed from \(urlString)")
                     #endif
                 }
             } catch {

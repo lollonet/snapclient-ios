@@ -27,6 +27,25 @@ enum SnapClientState: Int, Sendable {
 
 private let log = Logger(subsystem: "com.snapforge.snapclient", category: "Engine")
 
+/// Stability telemetry for monitoring engine health
+struct EngineDiagnostics: Sendable {
+    /// Number of zombie refs currently being cleaned up
+    let activeZombiesCount: Int
+    /// Whether the stopTask is currently hanging (taking >2s)
+    let isStopTaskHanging: Bool
+    /// Current connection target (nil if not connecting)
+    let activeConnectionTarget: String?
+    /// Whether a connection is in progress
+    let isConnecting: Bool
+
+    static let idle = EngineDiagnostics(
+        activeZombiesCount: 0,
+        isStopTaskHanging: false,
+        activeConnectionTarget: nil,
+        isConnecting: false
+    )
+}
+
 /// Swift wrapper around the snapclient C++ core via the C bridge.
 ///
 /// Usage:
@@ -100,6 +119,9 @@ final class SnapClientEngine: ObservableObject {
     /// Error message from audio session configuration (nil if successful).
     @Published private(set) var audioSessionError: String?
 
+    /// Stability telemetry for monitoring engine health during stress testing.
+    @Published private(set) var diagnostics: EngineDiagnostics = .idle
+
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
@@ -168,6 +190,7 @@ final class SnapClientEngine: ObservableObject {
         // Cancel any pending reconnect or in-progress connection
         reconnectTask?.cancel()
         connectionTask?.cancel()
+        stopTask?.cancel()
 
         // Remove audio session observers
         if let observer = interruptionObserver {
@@ -180,21 +203,32 @@ final class SnapClientEngine: ObservableObject {
         // Unregister log callback
         snapclient_set_log_callback(nil, nil)
 
-        // Must be called from any context, so we capture the ref
-        let ref = clientRef
-        clientRef = nil
-        if let ref {
-            // Unregister callbacks before destroying to prevent use-after-free
-            snapclient_set_state_callback(ref, nil, nil)
-            snapclient_set_settings_callback(ref, nil, nil)
-            snapclient_destroy(ref)
+        // CRITICAL: Block callbacks SYNCHRONOUSLY before deinit returns.
+        // This sets `destroying = true` on each client, which causes CallbackGuard
+        // to reject new callbacks. This prevents use-after-free where a callback
+        // fires after Swift deallocates this object but before Task.detached runs.
+        if let ref = clientRef {
+            snapclient_begin_destroy(ref)
+        }
+        for zombie in zombieRefs {
+            snapclient_begin_destroy(zombie)
         }
 
-        // Cleanup any zombie refs
-        for zombie in zombieRefs {
-            snapclient_set_state_callback(zombie, nil, nil)
-            snapclient_set_settings_callback(zombie, nil, nil)
-            snapclient_destroy(zombie)
+        // Capture refs for background cleanup (deinit is nonisolated)
+        // Include ALL zombie refs to prevent Engine Ghosting
+        let ref = clientRef
+        let zombies = zombieRefs
+
+        // Background cleanup - deinit returns immediately, never blocks
+        // The actual destruction can take time (waiting for io_thread), but
+        // callbacks are already blocked by begin_destroy above.
+        Task.detached {
+            if let ref {
+                snapclient_destroy(ref)
+            }
+            for zombie in zombies {
+                snapclient_destroy(zombie)
+            }
         }
     }
 
@@ -516,61 +550,107 @@ final class SnapClientEngine: ObservableObject {
 
     /// Discard stuck clientRef and create a fresh instance.
     /// Used when stopTask times out - the old ref becomes a "zombie" that cleans up in background.
+    /// CRITICAL: MainActor never calls C functions on the old ref - all cleanup in background.
     private func invalidateAndRecreate() {
-        log.warning("[\(self.instanceId)] invalidating stuck clientRef, creating fresh instance")
+        log.warning("[\(self.instanceId)] invalidating stuck clientRef")
 
-        // Move current ref to zombie list
-        if let oldRef = clientRef {
-            // Unregister callbacks to prevent callbacks from zombie
-            snapclient_set_state_callback(oldRef, nil, nil)
-            snapclient_set_settings_callback(oldRef, nil, nil)
-            zombieRefs.append(oldRef)
-        }
+        // Capture old ref - MainActor never calls C functions on it
+        let oldRef = clientRef
+        clientRef = nil
 
-        // Create fresh instance
+        // Create fresh instance immediately (non-blocking)
         clientRef = snapclient_create()
         guard clientRef != nil else {
-            log.error("[\(self.instanceId)] failed to create fresh snapclient instance!")
+            log.error("[\(self.instanceId)] failed to create fresh snapclient!")
             return
         }
 
         // Re-register callbacks on new instance
-        let clientId = Self.uniqueClientId
-        setName(clientId)
+        setName(Self.uniqueClientId)
         registerCallbacks()
 
-        log.info("[\(self.instanceId)] fresh clientRef created, \(self.zombieRefs.count) zombie(s) in background")
+        // Background cleanup of old ref - never blocks MainActor
+        if let oldRef {
+            let instanceId = self.instanceId
+            Task.detached { [weak self] in
+                // All C calls happen here, off MainActor
+                snapclient_set_state_callback(oldRef, nil, nil)
+                snapclient_set_settings_callback(oldRef, nil, nil)
 
-        // Try to cleanup old zombies
-        cleanupZombies()
+                // Add to zombie list for later destroy
+                await MainActor.run { [weak self] in
+                    self?.zombieRefs.append(oldRef)
+                    self?.cleanupZombies()
+                }
+
+                log.info("[\(instanceId)] zombie ref queued for cleanup")
+            }
+        }
     }
 
     /// Cleanup zombies that have finished stopping.
     /// Also enforces max zombie limit to prevent unbounded growth.
+    /// All C function calls happen in background to never block MainActor.
     private func cleanupZombies() {
-        // First, remove zombies that have finished cleaning up
-        zombieRefs.removeAll { ref in
-            let state = snapclient_get_state(ref)
-            if state == SNAPCLIENT_STATE_DISCONNECTED {
-                log.info("[\(self.instanceId)] destroying cleaned-up zombie ref")
-                snapclient_destroy(ref)
-                return true
+        guard !zombieRefs.isEmpty else { return }
+
+        // Capture current zombie list and clean up in background.
+        // This ensures MainActor NEVER calls C functions on zombie refs.
+        let currentZombies = zombieRefs
+        let maxZombies = maxZombieRefs
+        let instanceId = self.instanceId
+
+        Task.detached { [weak self] in
+            // Check state OFF MainActor - this is the design invariant fix
+            var zombiesToDestroy: [SnapClientRef] = []
+            var zombiesToKeep: [SnapClientRef] = []
+
+            for zombie in currentZombies {
+                if snapclient_get_state(zombie) == SNAPCLIENT_STATE_DISCONNECTED {
+                    zombiesToDestroy.append(zombie)
+                } else {
+                    zombiesToKeep.append(zombie)
+                }
             }
-            return false
+
+            // Destroy disconnected zombies
+            for zombie in zombiesToDestroy {
+                log.info("[\(instanceId)] destroying cleaned-up zombie ref")
+                snapclient_destroy(zombie)
+            }
+
+            // Force-destroy oldest if limit exceeded
+            while zombiesToKeep.count > maxZombies {
+                let oldest = zombiesToKeep.removeFirst()
+                log.warning("[\(instanceId)] force-destroying oldest zombie (limit exceeded)")
+                snapclient_set_state_callback(oldest, nil, nil)
+                snapclient_set_settings_callback(oldest, nil, nil)
+                snapclient_destroy(oldest)
+            }
+
+            // Update Swift state on MainActor
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                // Replace zombie list with those still pending
+                self.zombieRefs = zombiesToKeep
+
+                if !self.zombieRefs.isEmpty {
+                    log.info("[\(instanceId)] \(self.zombieRefs.count) zombie refs still pending cleanup")
+                }
+            }
         }
 
-        // Force-destroy oldest zombies if we exceed the limit
-        while zombieRefs.count > maxZombieRefs {
-            let oldest = zombieRefs.removeFirst()
-            log.warning("[\(self.instanceId)] force-destroying oldest zombie (limit exceeded)")
-            snapclient_set_state_callback(oldest, nil, nil)
-            snapclient_set_settings_callback(oldest, nil, nil)
-            snapclient_destroy(oldest)
-        }
+        updateDiagnostics()
+    }
 
-        if !zombieRefs.isEmpty {
-            log.info("[\(self.instanceId)] \(self.zombieRefs.count) zombie(s) still cleaning up")
-        }
+    /// Update diagnostics snapshot for monitoring
+    private func updateDiagnostics() {
+        diagnostics = EngineDiagnostics(
+            activeZombiesCount: zombieRefs.count,
+            isStopTaskHanging: stopTask != nil,
+            activeConnectionTarget: activeConnectionTarget,
+            isConnecting: isConnecting
+        )
     }
 
     private func configureAudioSession() {
@@ -704,6 +784,9 @@ final class SnapClientEngine: ObservableObject {
         if !zombieRefs.isEmpty {
             cleanupZombies()
         }
+
+        // Update diagnostics on every state change
+        updateDiagnostics()
 
         // Auto-reconnect if we were connected and got disconnected unexpectedly
         if oldState.isActive && newState == .disconnected &&

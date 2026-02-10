@@ -34,6 +34,12 @@ SnapClientRef snapclient_create(void);
 /// Safe to call with NULL.
 void snapclient_destroy(SnapClientRef client);
 
+/// Begin the destruction process by blocking new callbacks.
+/// Call this synchronously before async cleanup to prevent use-after-free.
+/// This sets `destroying = true` which causes CallbackGuard to reject new callbacks.
+/// Safe to call with NULL. Safe to call multiple times.
+void snapclient_begin_destroy(SnapClientRef client);
+
 /* ── Connection ─────────────────────────────────────────────────── */
 
 /// Connect to a Snapserver and start audio playback.

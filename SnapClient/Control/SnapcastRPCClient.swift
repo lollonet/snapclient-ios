@@ -78,6 +78,14 @@ struct SnapcastStream: Codable, Identifiable, Sendable {
             case artUrl = "artUrl"
         }
 
+        /// Memberwise initializer for incremental updates
+        init(artist: String? = nil, title: String? = nil, album: String? = nil, artUrl: String? = nil) {
+            self.artist = artist
+            self.title = title
+            self.album = album
+            self.artUrl = artUrl
+        }
+
         // Custom decoder to handle fields that can be String or [String]
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -603,10 +611,186 @@ final class SnapcastRPCClient: ObservableObject {
                 cont.resume(returning: data)
                 return
             }
+
+            // Server notification — try incremental update first
+            if let method = json["method"] as? String,
+               let params = json["params"] as? [String: Any] {
+                if handleIncrementalUpdate(method: method, params: params) {
+                    #if DEBUG
+                    print("[RPC] Handled incrementally: \(method)")
+                    #endif
+                    return
+                }
+            }
         }
 
-        // Server notification — use debounced refresh to avoid storm
+        // Fall back to full refresh for unhandled notifications
         debouncedRefresh()
+    }
+
+    // MARK: - Incremental Model Updates
+
+    /// Handle notifications incrementally without full refresh.
+    /// Returns true if handled, false if full refresh is needed.
+    private func handleIncrementalUpdate(method: String, params: [String: Any]) -> Bool {
+        guard var status = serverStatus else { return false }
+
+        switch method {
+        case "Client.OnVolumeChanged":
+            guard let clientId = params["id"] as? String,
+                  let volumeDict = params["volume"] as? [String: Any],
+                  let percent = volumeDict["percent"] as? Int,
+                  let muted = volumeDict["muted"] as? Bool else {
+                return false
+            }
+            // Update client volume in all groups
+            for groupIndex in status.groups.indices {
+                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
+                    status.groups[groupIndex].clients[clientIndex].config.volume = ClientVolume(percent: percent, muted: muted)
+                    serverStatus = status
+                    #if DEBUG
+                    print("[RPC] Incremental: Client \(clientId) volume -> \(percent)% muted=\(muted)")
+                    #endif
+                    return true
+                }
+            }
+            return false
+
+        case "Client.OnNameChanged":
+            guard let clientId = params["id"] as? String,
+                  let configDict = params["config"] as? [String: Any],
+                  let name = configDict["name"] as? String else {
+                return false
+            }
+            for groupIndex in status.groups.indices {
+                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
+                    status.groups[groupIndex].clients[clientIndex].config.name = name
+                    serverStatus = status
+                    return true
+                }
+            }
+            return false
+
+        case "Client.OnLatencyChanged":
+            guard let clientId = params["id"] as? String,
+                  let configDict = params["config"] as? [String: Any],
+                  let latency = configDict["latency"] as? Int else {
+                return false
+            }
+            for groupIndex in status.groups.indices {
+                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
+                    status.groups[groupIndex].clients[clientIndex].config.latency = latency
+                    serverStatus = status
+                    return true
+                }
+            }
+            return false
+
+        case "Client.OnConnect", "Client.OnDisconnect":
+            // These require full refresh since client list changes
+            return false
+
+        case "Group.OnMute":
+            guard let groupId = params["id"] as? String,
+                  let mute = params["mute"] as? Bool else {
+                return false
+            }
+            if let groupIndex = status.groups.firstIndex(where: { $0.id == groupId }) {
+                status.groups[groupIndex].muted = mute
+                serverStatus = status
+                return true
+            }
+            return false
+
+        case "Group.OnNameChanged":
+            guard let groupId = params["id"] as? String,
+                  let name = params["name"] as? String else {
+                return false
+            }
+            if let groupIndex = status.groups.firstIndex(where: { $0.id == groupId }) {
+                status.groups[groupIndex].name = name
+                serverStatus = status
+                return true
+            }
+            return false
+
+        case "Group.OnStreamChanged":
+            guard let groupId = params["id"] as? String,
+                  let streamId = params["stream_id"] as? String else {
+                return false
+            }
+            if let groupIndex = status.groups.firstIndex(where: { $0.id == groupId }) {
+                status.groups[groupIndex].stream_id = streamId
+                serverStatus = status
+                return true
+            }
+            return false
+
+        case "Stream.OnProperties":
+            guard let streamId = params["id"] as? String,
+                  let propsDict = params["properties"] as? [String: Any] else {
+                return false
+            }
+            if let streamIndex = status.streams.firstIndex(where: { $0.id == streamId }) {
+                // Decode properties incrementally
+                if let metaDict = propsDict["metadata"] as? [String: Any] {
+                    let artist = Self.extractStringOrArray(metaDict["artist"])
+                    let title = Self.extractStringOrArray(metaDict["title"])
+                    let album = Self.extractStringOrArray(metaDict["album"])
+                    let artUrl = metaDict["artUrl"] as? String
+
+                    // Create updated metadata - use existing if field is nil
+                    let existingMeta = status.streams[streamIndex].properties?.metadata
+                    let newMeta = SnapcastStream.StreamMetadata(
+                        artist: artist ?? existingMeta?.artist,
+                        title: title ?? existingMeta?.title,
+                        album: album ?? existingMeta?.album,
+                        artUrl: artUrl ?? existingMeta?.artUrl
+                    )
+
+                    // Update stream properties
+                    if status.streams[streamIndex].properties == nil {
+                        status.streams[streamIndex].properties = SnapcastStream.StreamProperties(metadata: newMeta)
+                    } else {
+                        status.streams[streamIndex].properties?.metadata = newMeta
+                    }
+                    serverStatus = status
+                    #if DEBUG
+                    print("[RPC] Incremental: Stream \(streamId) metadata -> \(title ?? "nil") by \(artist ?? "nil")")
+                    #endif
+                    return true
+                }
+            }
+            return false
+
+        case "Stream.OnUpdate":
+            guard let streamId = params["id"] as? String,
+                  let streamDict = params["stream"] as? [String: Any],
+                  let streamStatus = streamDict["status"] as? String else {
+                return false
+            }
+            if let streamIndex = status.streams.firstIndex(where: { $0.id == streamId }) {
+                status.streams[streamIndex].status = streamStatus
+                serverStatus = status
+                return true
+            }
+            return false
+
+        default:
+            // Unknown notification - needs full refresh
+            return false
+        }
+    }
+
+    /// Extract a string or array of strings from JSON value
+    private static func extractStringOrArray(_ value: Any?) -> String? {
+        if let str = value as? String {
+            return str
+        }
+        if let arr = value as? [String] {
+            return arr.joined(separator: ", ")
+        }
+        return nil
     }
 }
 
