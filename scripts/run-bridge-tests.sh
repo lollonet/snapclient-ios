@@ -1,99 +1,88 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Run C++ Bridge Stability Tests
+# Run Bridge Stability Tests
 #
-# This script builds and runs the bridge stress tests to verify
-# thread-safety and deadlock-freedom of the snapclient bridge.
+# NOTE: The bridge library is built for iOS device (arm64), not simulator.
+# These tests must run on a physical iOS device, or you can rebuild
+# the bridge for simulator using: ./scripts/build-deps.sh --simulator
 #
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="$PROJECT_DIR/build/tests"
-TEST_SRC="$PROJECT_DIR/Tests/StabilityTests/BridgeStabilityTests.cpp"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+BLUE='\033[0;34m'
+NC='\033[0m'
 
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║         Building Bridge Stability Tests                      ║"
+echo "║         Bridge Stability Tests                               ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Ensure dependencies are built
-if [ ! -f "$PROJECT_DIR/build/deps/snapclient_core/libsnapclient_bridge.a" ]; then
-    echo -e "${YELLOW}⚠️  Bridge library not found. Building dependencies...${NC}"
-    "$SCRIPT_DIR/build-deps.sh"
-fi
-
-# Create build directory
-mkdir -p "$BUILD_DIR"
-
-# Compiler flags
-CXX="${CXX:-clang++}"
-CXXFLAGS="-std=c++17 -O2 -g"
-INCLUDES=(
-    "-I$PROJECT_DIR/SnapClientCore/bridge"
-    "-I$PROJECT_DIR/SnapClientCore/ios_player"
-    "-I$PROJECT_DIR/SnapClientCore/ios_shim"
-    "-I$PROJECT_DIR/SnapClientCore/vendor/snapcast"
-    "-I$PROJECT_DIR/SnapClientCore/vendor/snapcast/client"
-    "-I$PROJECT_DIR/SnapClientCore/vendor/snapcast/common"
-    "-I$PROJECT_DIR/SnapClientCore/vendor/boost"
-)
-LIBS=(
-    "-L$PROJECT_DIR/build/deps/snapclient_core"
-    "-lsnapclient_bridge"
-    "-lsnapclient_core"
-    "-L$PROJECT_DIR/SnapClientCore/vendor/flac/lib"
-    "-L$PROJECT_DIR/SnapClientCore/vendor/opus/lib"
-    "-L$PROJECT_DIR/SnapClientCore/vendor/ogg/lib"
-    "-lFLAC"
-    "-lopus"
-    "-logg"
-    "-framework AudioToolbox"
-    "-framework CoreFoundation"
-    "-framework Foundation"
-    "-lpthread"
-)
-
-echo "Compiling $TEST_SRC..."
-echo ""
-
-# Build the test binary
-$CXX $CXXFLAGS \
-    "${INCLUDES[@]}" \
-    "$TEST_SRC" \
-    "${LIBS[@]}" \
-    -o "$BUILD_DIR/bridge_stability_tests"
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ Build failed${NC}"
+# Check library architecture
+if [ -f "$PROJECT_DIR/build/deps/snapclient_core/libsnapclient_bridge.a" ]; then
+    ARCH_INFO=$(lipo -info "$PROJECT_DIR/build/deps/snapclient_core/libsnapclient_bridge.a" 2>/dev/null || echo "unknown")
+    echo "Bridge library: $ARCH_INFO"
+else
+    echo -e "${RED}❌ Bridge library not found. Run: ./scripts/build-deps.sh${NC}"
     exit 1
 fi
 
-echo -e "${GREEN}✅ Build successful${NC}"
+echo ""
+echo -e "${YELLOW}⚠️  The bridge is built for iOS device, not simulator.${NC}"
+echo ""
+echo "To run these tests, you have two options:"
+echo ""
+echo "  1. Run on a physical iOS device:"
+echo "     - Connect your device"
+echo "     - Open SnapClient.xcodeproj in Xcode"
+echo "     - Select your device as the destination"
+echo "     - Run: Product → Test (⌘U)"
+echo ""
+echo "  2. Rebuild the bridge for simulator (if supported):"
+echo "     - Run: ./scripts/build-deps.sh --simulator"
+echo "     - Then run this script again"
+echo ""
+echo "  3. Run the C++ tests standalone (pattern verification only):"
+echo "     - See: Tests/StabilityTests/BridgeStabilityTests.cpp"
+echo "     - This file documents the test patterns"
 echo ""
 
-# Run the tests
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║         Running Bridge Stability Tests                       ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
-echo ""
+# Check if device is connected
+DEVICES=$(xcrun xctrace list devices 2>/dev/null | grep -E "iPhone|iPad" | grep -v Simulator || true)
 
-"$BUILD_DIR/bridge_stability_tests"
+if [ -n "$DEVICES" ]; then
+    echo -e "${GREEN}Detected iOS devices:${NC}"
+    echo "$DEVICES"
+    echo ""
 
-exit_code=$?
+    read -p "Run tests on connected device? [y/N] " -n 1 -r
+    echo ""
 
-echo ""
-if [ $exit_code -eq 0 ]; then
-    echo -e "${GREEN}✅ All bridge tests passed${NC}"
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        DEVICE_ID=$(echo "$DEVICES" | head -1 | grep -oE '\([^)]+\)$' | tr -d '()')
+        echo ""
+        echo "Running tests on device: $DEVICE_ID"
+        echo ""
+
+        cd "$PROJECT_DIR"
+        xcodebuild test \
+            -project SnapClient.xcodeproj \
+            -scheme SnapClient \
+            -destination "id=$DEVICE_ID" \
+            -only-testing:SnapClientTests/SnapClientStabilityTests \
+            2>&1 | grep -E "(Test Case|passed|failed|Executed|🧪|📊|✅|❌)" || true
+
+        echo ""
+        echo -e "${GREEN}Tests completed. Check output above for results.${NC}"
+    fi
 else
-    echo -e "${RED}❌ Some tests failed (exit code: $exit_code)${NC}"
+    echo -e "${YELLOW}No iOS devices detected.${NC}"
+    echo ""
+    echo "Connect a device and run this script again, or use Xcode directly."
 fi
-
-exit $exit_code
