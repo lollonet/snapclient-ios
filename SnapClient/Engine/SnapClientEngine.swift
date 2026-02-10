@@ -27,6 +27,25 @@ enum SnapClientState: Int, Sendable {
 
 private let log = Logger(subsystem: "com.snapforge.snapclient", category: "Engine")
 
+/// Stability telemetry for monitoring engine health
+struct EngineDiagnostics: Sendable {
+    /// Number of zombie refs currently being cleaned up
+    let activeZombiesCount: Int
+    /// Whether the stopTask is currently hanging (taking >2s)
+    let isStopTaskHanging: Bool
+    /// Current connection target (nil if not connecting)
+    let activeConnectionTarget: String?
+    /// Whether a connection is in progress
+    let isConnecting: Bool
+
+    static let idle = EngineDiagnostics(
+        activeZombiesCount: 0,
+        isStopTaskHanging: false,
+        activeConnectionTarget: nil,
+        isConnecting: false
+    )
+}
+
 /// Swift wrapper around the snapclient C++ core via the C bridge.
 ///
 /// Usage:
@@ -100,6 +119,9 @@ final class SnapClientEngine: ObservableObject {
     /// Error message from audio session configuration (nil if successful).
     @Published private(set) var audioSessionError: String?
 
+    /// Stability telemetry for monitoring engine health during stress testing.
+    @Published private(set) var diagnostics: EngineDiagnostics = .idle
+
     // MARK: - Private
 
     private var clientRef: SnapClientRef?
@@ -168,6 +190,7 @@ final class SnapClientEngine: ObservableObject {
         // Cancel any pending reconnect or in-progress connection
         reconnectTask?.cancel()
         connectionTask?.cancel()
+        stopTask?.cancel()
 
         // Remove audio session observers
         if let observer = interruptionObserver {
@@ -181,10 +204,12 @@ final class SnapClientEngine: ObservableObject {
         snapclient_set_log_callback(nil, nil)
 
         // Capture refs for background cleanup (deinit is nonisolated)
+        // Include ALL zombie refs to prevent Engine Ghosting
         let ref = clientRef
         let zombies = zombieRefs
 
         // Background cleanup - deinit returns immediately, never blocks
+        // This ensures C++ cleanup completes even if Swift object is deallocated
         Task.detached {
             if let ref {
                 snapclient_set_state_callback(ref, nil, nil)
@@ -589,6 +614,18 @@ final class SnapClientEngine: ObservableObject {
         if !zombieRefs.isEmpty {
             log.info("[\(self.instanceId)] \(self.zombieRefs.count) zombie(s) still cleaning up")
         }
+
+        updateDiagnostics()
+    }
+
+    /// Update diagnostics snapshot for monitoring
+    private func updateDiagnostics() {
+        diagnostics = EngineDiagnostics(
+            activeZombiesCount: zombieRefs.count,
+            isStopTaskHanging: stopTask != nil,
+            activeConnectionTarget: activeConnectionTarget,
+            isConnecting: isConnecting
+        )
     }
 
     private func configureAudioSession() {
@@ -722,6 +759,9 @@ final class SnapClientEngine: ObservableObject {
         if !zombieRefs.isEmpty {
             cleanupZombies()
         }
+
+        // Update diagnostics on every state change
+        updateDiagnostics()
 
         // Auto-reconnect if we were connected and got disconnected unexpectedly
         if oldState.isActive && newState == .disconnected &&

@@ -234,6 +234,11 @@ bool snapclient_start(SnapClientRef client, const char* host, int port) {
         return false; // already running
     }
 
+    // HARD RESET: Clear TimeProvider's stale clock data from previous server
+    // This prevents clock drift issues (-1.68e+08ms) when switching servers
+    TimeProvider::getInstance().reset();
+    BLOG_INFO("TimeProvider reset for new connection");
+
     client->host = host;
     client->port = port;
     BLOG_INFO("start: host=%s, port=%d", host, port);
