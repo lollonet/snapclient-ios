@@ -30,6 +30,7 @@
 
 // Standard headers
 #include <atomic>
+#include <mutex>
 
 namespace player
 {
@@ -68,7 +69,7 @@ protected:
 
 private:
     bool initAudioQueue();
-    void uninitAudioQueue(AudioQueueRef queue);
+    void cleanupAudioQueue();  // Safe cleanup from worker thread
 
     size_t ms_;
     size_t frames_;
@@ -77,6 +78,12 @@ private:
     AudioQueueTimelineRef timeLine_{nullptr};  // Initialize to nullptr for safe lifecycle
     std::shared_ptr<Stream> pubStream_;
     uint64_t lastChunkTick{0};
+
+    // Thread-safe signaling for callback -> worker communication
+    std::atomic<bool> needsReinit_{false};      // Signal worker to reinit audio queue
+    std::atomic<bool> shutdownRequested_{false}; // Signal clean shutdown
+    CFRunLoopRef workerRunLoop_{nullptr};       // Store worker's runloop reference
+    std::mutex queueMutex_;                     // Protect queue_ access
 };
 
 } // namespace player
