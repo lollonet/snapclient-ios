@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(SnapClientCore C CXX)
+project(SnapClientCore C CXX OBJCXX)  # OBJCXX for .mm files
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -54,6 +54,7 @@ set(SNAPCLIENT_SOURCES
   ${SNAPCAST_DIR}/client/player/coreaudio_player.cpp
   ${SNAPCAST_DIR}/client/player/file_player.cpp
   ${IOS_PLAYER_DIR}/ios_player.cpp
+  ${IOS_PLAYER_DIR}/ios_audio_latency.mm  # Audio latency query (Obj-C++)
 
   # Common
   ${SNAPCAST_DIR}/common/base64.cpp

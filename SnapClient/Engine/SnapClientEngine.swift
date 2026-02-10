@@ -130,6 +130,7 @@ final class SnapClientEngine: ObservableObject {
     private var stopTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
 
     /// Zombie refs that timed out during stop - let them clean up in background
     /// This prevents stuck C++ instances from blocking new connections
@@ -192,16 +193,21 @@ final class SnapClientEngine: ObservableObject {
         connectionTask?.cancel()
         stopTask?.cancel()
 
-        // Remove audio session observers
+        // Remove audio session and lifecycle observers
         if let observer = interruptionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = routeChangeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = foregroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
 
-        // Unregister log callback
-        snapclient_set_log_callback(nil, nil)
+        // Unregister instance-specific log callback (not global, to avoid multi-instance conflicts)
+        if let ref = clientRef {
+            snapclient_set_instance_log_callback(ref, nil, nil)
+        }
 
         // CRITICAL: Block callbacks SYNCHRONOUSLY before deinit returns.
         // This sets `destroying = true` on each client, which causes CallbackGuard
@@ -742,8 +748,10 @@ final class SnapClientEngine: ObservableObject {
     }
 
     private func registerLogCallback() {
+        guard let ref = clientRef else { return }
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        snapclient_set_log_callback({ ctx, level, msg in
+        // Use per-instance log callback to avoid multi-instance conflicts
+        snapclient_set_instance_log_callback(ref, { ctx, level, msg in
             guard let ctx, let msg else { return }
             let engine = Unmanaged<SnapClientEngine>.fromOpaque(ctx)
                 .takeUnretainedValue()
@@ -823,6 +831,10 @@ final class SnapClientEngine: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             routeChangeObserver = nil
         }
+        if let observer = foregroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+            foregroundObserver = nil
+        }
 
         // Audio interruption (phone call, Siri, etc.)
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -845,6 +857,26 @@ final class SnapClientEngine: ObservableObject {
                 self?.handleRouteChange(notification)
             }
         }
+
+        // App returning to foreground - reset clock to prevent skew after suspension
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleForegroundResume()
+            }
+        }
+    }
+
+    private func handleForegroundResume() {
+        // Reset TimeProvider clock synchronization to prevent skew after app suspension.
+        // When iOS suspends the app, the internal clock state becomes stale and can
+        // cause massive drift (e.g., -46 hours) leading to silent playback failure.
+        guard state.isActive else { return }
+        log.info("Foreground resume: resetting clock synchronization")
+        snapclient_reset_clock()
     }
 
     private func handleRouteChange(_ notification: Notification) {

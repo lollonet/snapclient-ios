@@ -358,10 +358,11 @@ final class NowPlayingManager: ObservableObject {
                 return
             }
 
-            // Decompress image
-            let format = UIGraphicsImageRendererFormat()
+            // Decompress image - use explicit format to avoid UIScreen.main access on background thread
+            let format = UIGraphicsImageRendererFormat.preferred()
             format.scale = image.scale
             format.opaque = false
+            format.preferredRange = .standard  // Prevent 'visual style' warnings
 
             let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
             let decompressedImage = renderer.image { context in
@@ -423,9 +424,11 @@ final class NowPlayingManager: ObservableObject {
 
                     // Force decompression by drawing into a graphics context
                     // This ensures the expensive JPEG/PNG decode happens off MainActor
-                    let format = UIGraphicsImageRendererFormat()
+                    // Use preferred() and explicit preferredRange to avoid UIScreen.main access
+                    let format = UIGraphicsImageRendererFormat.preferred()
                     format.scale = image.scale
                     format.opaque = false
+                    format.preferredRange = .standard  // Prevent 'visual style' warnings
 
                     let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
                     let decompressedImage = renderer.image { context in

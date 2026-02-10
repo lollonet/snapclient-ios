@@ -149,9 +149,18 @@ typedef enum {
 /// @param msg    Null-terminated log message (UTF-8).
 typedef void (*SnapClientLogCallback)(void* ctx, SnapClientLogLevel level, const char* msg);
 
-/// Register a log callback to receive all bridge log messages.
+/// Register a global log callback to receive all bridge log messages.
 /// Pass NULL to unregister. Logs are also sent to os_log.
+/// Note: Prefer snapclient_set_instance_log_callback for per-instance logging.
 void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx);
+
+/// Register a per-instance log callback.
+/// This takes precedence over the global callback for this instance.
+/// Use this instead of the global callback to avoid multi-instance conflicts.
+/// Pass NULL to unregister.
+void snapclient_set_instance_log_callback(SnapClientRef client,
+                                          SnapClientLogCallback callback,
+                                          void* ctx);
 
 /* ── Audio session (iOS-specific) ───────────────────────────────── */
 
@@ -159,6 +168,13 @@ void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx);
 /// Call this before snapclient_start().
 /// Returns true on success.
 bool snapclient_configure_audio_session(void);
+
+/* ── Clock synchronization ──────────────────────────────────────── */
+
+/// Reset the TimeProvider clock synchronization state.
+/// Call this when the app returns to foreground after being suspended
+/// to prevent clock skew issues (e.g., -46 hour drift).
+void snapclient_reset_clock(void);
 
 /* ── Diagnostics ────────────────────────────────────────────────── */
 
