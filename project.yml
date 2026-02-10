@@ -60,8 +60,7 @@ targets:
           - -framework CoreFoundation
           - -framework Foundation
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
-        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: ""
       configs:
         Debug:
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
