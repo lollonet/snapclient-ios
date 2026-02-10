@@ -130,6 +130,7 @@ final class SnapClientEngine: ObservableObject {
     private var stopTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
 
     /// Zombie refs that timed out during stop - let them clean up in background
     /// This prevents stuck C++ instances from blocking new connections
@@ -192,11 +193,14 @@ final class SnapClientEngine: ObservableObject {
         connectionTask?.cancel()
         stopTask?.cancel()
 
-        // Remove audio session observers
+        // Remove audio session and lifecycle observers
         if let observer = interruptionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = foregroundObserver {
             NotificationCenter.default.removeObserver(observer)
         }
 
@@ -827,6 +831,10 @@ final class SnapClientEngine: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             routeChangeObserver = nil
         }
+        if let observer = foregroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+            foregroundObserver = nil
+        }
 
         // Audio interruption (phone call, Siri, etc.)
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -849,6 +857,26 @@ final class SnapClientEngine: ObservableObject {
                 self?.handleRouteChange(notification)
             }
         }
+
+        // App returning to foreground - reset clock to prevent skew after suspension
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.handleForegroundResume()
+            }
+        }
+    }
+
+    private func handleForegroundResume() {
+        // Reset TimeProvider clock synchronization to prevent skew after app suspension.
+        // When iOS suspends the app, the internal clock state becomes stale and can
+        // cause massive drift (e.g., -46 hours) leading to silent playback failure.
+        guard state.isActive else { return }
+        log.info("Foreground resume: resetting clock synchronization")
+        snapclient_reset_clock()
     }
 
     private func handleRouteChange(_ notification: Notification) {

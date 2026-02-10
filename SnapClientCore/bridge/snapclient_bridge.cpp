@@ -394,6 +394,8 @@ void snapclient_stop(SnapClientRef client) {
         }
 
         // Stop io_context - this signals the worker thread to exit
+        // Note: Socket cleanup happens via the destructor chain:
+        // controller.reset() -> ~Controller -> ~ClientConnection -> disconnect()
         if (client->work_guard) {
             client->work_guard.reset();
         }
@@ -545,6 +547,13 @@ bool snapclient_configure_audio_session(void) {
     // (this file is compiled as C++, not Objective-C++)
     BLOG_INFO("configure_audio_session: delegating to Swift");
     return true;
+}
+
+/* ── Clock synchronization ──────────────────────────────────────── */
+
+void snapclient_reset_clock(void) {
+    BLOG_INFO("reset_clock: resetting TimeProvider for foreground resume");
+    TimeProvider::getInstance().reset();
 }
 
 /* ── Diagnostics ────────────────────────────────────────────────── */

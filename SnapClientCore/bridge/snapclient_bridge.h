@@ -169,6 +169,13 @@ void snapclient_set_instance_log_callback(SnapClientRef client,
 /// Returns true on success.
 bool snapclient_configure_audio_session(void);
 
+/* ── Clock synchronization ──────────────────────────────────────── */
+
+/// Reset the TimeProvider clock synchronization state.
+/// Call this when the app returns to foreground after being suspended
+/// to prevent clock skew issues (e.g., -46 hour drift).
+void snapclient_reset_clock(void);
+
 /* ── Diagnostics ────────────────────────────────────────────────── */
 
 /// Test raw TCP connection to host:port (bypasses Snapcast protocol).
