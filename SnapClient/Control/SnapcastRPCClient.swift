@@ -72,18 +72,21 @@ struct SnapcastStream: Codable, Identifiable, Sendable {
         var title: String?
         var album: String?
         var artUrl: String?
+        var artData: String?  // Base64-encoded embedded artwork (from AirPlay, MPD, etc.)
 
         enum CodingKeys: String, CodingKey {
             case artist, title, album
             case artUrl = "artUrl"
+            case artData = "artData"  // Also check for "COVER" in raw parsing
         }
 
         /// Memberwise initializer for incremental updates
-        init(artist: String? = nil, title: String? = nil, album: String? = nil, artUrl: String? = nil) {
+        init(artist: String? = nil, title: String? = nil, album: String? = nil, artUrl: String? = nil, artData: String? = nil) {
             self.artist = artist
             self.title = title
             self.album = album
             self.artUrl = artUrl
+            self.artData = artData
         }
 
         // Custom decoder to handle fields that can be String or [String]
@@ -93,6 +96,7 @@ struct SnapcastStream: Codable, Identifiable, Sendable {
             title = Self.decodeStringOrArray(container, key: .title)
             album = Self.decodeStringOrArray(container, key: .album)
             artUrl = try container.decodeIfPresent(String.self, forKey: .artUrl)
+            artData = try container.decodeIfPresent(String.self, forKey: .artData)
         }
 
         private static func decodeStringOrArray(_ container: KeyedDecodingContainer<CodingKeys>, key: CodingKeys) -> String? {
@@ -738,6 +742,8 @@ final class SnapcastRPCClient: ObservableObject {
                     let title = Self.extractStringOrArray(metaDict["title"])
                     let album = Self.extractStringOrArray(metaDict["album"])
                     let artUrl = metaDict["artUrl"] as? String
+                    // Check for embedded artwork: "artData" or "COVER" (AirPlay uses COVER)
+                    let artData = (metaDict["artData"] as? String) ?? (metaDict["COVER"] as? String)
 
                     // Create updated metadata - use existing if field is nil
                     let existingMeta = status.streams[streamIndex].properties?.metadata
@@ -745,7 +751,8 @@ final class SnapcastRPCClient: ObservableObject {
                         artist: artist ?? existingMeta?.artist,
                         title: title ?? existingMeta?.title,
                         album: album ?? existingMeta?.album,
-                        artUrl: artUrl ?? existingMeta?.artUrl
+                        artUrl: artUrl ?? existingMeta?.artUrl,
+                        artData: artData ?? existingMeta?.artData
                     )
 
                     // Update stream properties

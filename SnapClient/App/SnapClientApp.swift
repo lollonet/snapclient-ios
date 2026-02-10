@@ -8,6 +8,7 @@ struct SnapClientApp: App {
     @StateObject private var discovery = ServerDiscovery()
     @StateObject private var rpcClient = SnapcastRPCClient()
     @StateObject private var nowPlaying = NowPlayingManager()
+    @StateObject private var savedServers = SavedServersStore()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -22,6 +23,7 @@ struct SnapClientApp: App {
                 .environmentObject(engine)
                 .environmentObject(discovery)
                 .environmentObject(rpcClient)
+                .environmentObject(savedServers)
                 .task {
                     // Configure now playing integration
                     nowPlaying.configure(engine: engine, rpcClient: rpcClient)

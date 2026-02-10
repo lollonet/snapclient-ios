@@ -104,8 +104,20 @@ struct PlayerView: View {
                meta.title != nil || meta.artist != nil {
                 VStack(spacing: 16) {
                     // Cover art with adaptive sizing
-                    if let artUrlString = meta.artUrl,
-                       let artUrl = URL(string: artUrlString) {
+                    // Priority: embedded base64 > URL (with HTTP→HTTPS)
+                    if let artData = meta.artData,
+                       let data = Data(base64Encoded: artData),
+                       let uiImage = UIImage(data: data) {
+                        // Embedded artwork from MPD/AirPlay
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: adaptiveAlbumSize, height: adaptiveAlbumSize)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
+                    } else if let artUrlString = meta.artUrl,
+                              let artUrl = Self.secureURL(from: artUrlString) {
+                        // URL artwork (with HTTP→HTTPS conversion)
                         AsyncImage(url: artUrl) { phase in
                             switch phase {
                             case .empty:
@@ -166,6 +178,14 @@ struct PlayerView: View {
                 .foregroundStyle(.secondary.opacity(0.5))
         }
         .frame(width: adaptiveAlbumSize, height: adaptiveAlbumSize)
+    }
+
+    /// Convert HTTP URLs to HTTPS for App Transport Security compliance
+    private static func secureURL(from urlString: String) -> URL? {
+        let secure = urlString.hasPrefix("http://")
+            ? urlString.replacingOccurrences(of: "http://", with: "https://")
+            : urlString
+        return URL(string: secure)
     }
 
     // MARK: - Controls Card
