@@ -112,6 +112,7 @@ final class SnapClientEngine: ObservableObject {
     /// Zombie refs that timed out during stop - let them clean up in background
     /// This prevents stuck C++ instances from blocking new connections
     private var zombieRefs: [SnapClientRef] = []
+    private let maxZombieRefs = 5  // Force-destroy oldest if exceeded
 
     /// Tracks if a blocking C++ connect is in progress.
     /// Used to prevent socket exhaustion from rapid connection attempts.
@@ -545,7 +546,9 @@ final class SnapClientEngine: ObservableObject {
     }
 
     /// Cleanup zombies that have finished stopping.
+    /// Also enforces max zombie limit to prevent unbounded growth.
     private func cleanupZombies() {
+        // First, remove zombies that have finished cleaning up
         zombieRefs.removeAll { ref in
             let state = snapclient_get_state(ref)
             if state == SNAPCLIENT_STATE_DISCONNECTED {
@@ -554,6 +557,15 @@ final class SnapClientEngine: ObservableObject {
                 return true
             }
             return false
+        }
+
+        // Force-destroy oldest zombies if we exceed the limit
+        while zombieRefs.count > maxZombieRefs {
+            let oldest = zombieRefs.removeFirst()
+            log.warning("[\(self.instanceId)] force-destroying oldest zombie (limit exceeded)")
+            snapclient_set_state_callback(oldest, nil, nil)
+            snapclient_set_settings_callback(oldest, nil, nil)
+            snapclient_destroy(oldest)
         }
 
         if !zombieRefs.isEmpty {
@@ -686,6 +698,11 @@ final class SnapClientEngine: ObservableObject {
         // Reset reconnect attempts on successful connection
         if newState == .connected || newState == .playing {
             reconnectAttempts = 0
+        }
+
+        // Periodic zombie cleanup - check on state changes
+        if !zombieRefs.isEmpty {
+            cleanupZombies()
         }
 
         // Auto-reconnect if we were connected and got disconnected unexpectedly

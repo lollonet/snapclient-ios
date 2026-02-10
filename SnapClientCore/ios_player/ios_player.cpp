@@ -90,9 +90,15 @@ IOSPlayer::~IOSPlayer()
     active_ = false;
 
     // Wake up worker thread if it's blocked in CFRunLoopRun
-    if (workerRunLoop_)
+    // Load under mutex to prevent TOCTOU race with worker thread clearing it
+    CFRunLoopRef runLoop = nullptr;
     {
-        CFRunLoopStop(workerRunLoop_);
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        runLoop = workerRunLoop_;
+    }
+    if (runLoop)
+    {
+        CFRunLoopStop(runLoop);
     }
 }
 
@@ -111,10 +117,12 @@ void IOSPlayer::pause()
     LOG(INFO, LOG_TAG) << "Pausing audio playback\n";
     g_ios_player_paused.store(true);
 
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    if (queue_)
+    // AudioQueue APIs are thread-safe, no mutex needed here.
+    // queueMutex_ is only for protecting queue_ lifecycle (create/destroy).
+    AudioQueueRef q = queue_;  // atomic load
+    if (q)
     {
-        AudioQueuePause(queue_);
+        AudioQueuePause(q);
     }
 }
 
@@ -124,10 +132,11 @@ void IOSPlayer::resume()
     LOG(INFO, LOG_TAG) << "Resuming audio playback\n";
     g_ios_player_paused.store(false);
 
-    std::lock_guard<std::mutex> lock(queueMutex_);
-    if (queue_)
+    // AudioQueue APIs are thread-safe, no mutex needed here.
+    AudioQueueRef q = queue_;  // atomic load
+    if (q)
     {
-        AudioQueueStart(queue_, NULL);
+        AudioQueueStart(q, NULL);
     }
 }
 
@@ -136,8 +145,8 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
 {
     char* buffer = (char*)bufferRef->mAudioData;
 
-    // If paused, fill silence and re-enqueue (don't call AudioQueuePause here - it's not safe from callback)
-    if (g_ios_player_paused.load())
+    // Use relaxed memory order for hot path - ordering doesn't matter here
+    if (g_ios_player_paused.load(std::memory_order_relaxed))
     {
         memset(buffer, 0, bufferRef->mAudioDataByteSize);
         AudioQueueEnqueueBuffer(queue, bufferRef, 0, NULL);
@@ -145,9 +154,9 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
     }
 
     // Check for shutdown request - signal and exit, don't cleanup from callback
-    if (!active_ || shutdownRequested_.load())
+    if (!active_ || shutdownRequested_.load(std::memory_order_relaxed))
     {
-        needsReinit_.store(true);
+        needsReinit_.store(true, std::memory_order_relaxed);
         if (workerRunLoop_)
             CFRunLoopStop(workerRunLoop_);
         return;  // Don't enqueue buffer - let queue drain
@@ -155,10 +164,16 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
 
     // Estimate the playout delay by checking the number of frames left in the buffer
     // and add ms_ (= complete buffer size). Based on trying.
-    AudioTimeStamp timestamp;
-    AudioQueueGetCurrentTime(queue, timeLine_, &timestamp, NULL);
-    size_t bufferedFrames = (frames_ - ((uint64_t)timestamp.mSampleTime % frames_)) % frames_;
-    size_t bufferedMs = bufferedFrames * 1000 / pubStream_->getFormat().rate() + (ms_ * (NUM_BUFFERS - 1));
+    size_t bufferedMs = ms_ * (NUM_BUFFERS - 1);  // Default if no timeline
+
+    // Only use timeline if it was successfully created
+    if (timeLine_)
+    {
+        AudioTimeStamp timestamp;
+        AudioQueueGetCurrentTime(queue, timeLine_, &timestamp, NULL);
+        size_t bufferedFrames = (frames_ - ((uint64_t)timestamp.mSampleTime % frames_)) % frames_;
+        bufferedMs = bufferedFrames * 1000 / pubStream_->getFormat().rate() + (ms_ * (NUM_BUFFERS - 1));
+    }
     // 15ms DAC delay. Based on trying.
     bufferedMs += 15;
 
@@ -239,6 +254,13 @@ void IOSPlayer::worker()
 
 bool IOSPlayer::initAudioQueue()
 {
+    // Guard against double initialization (would leak AudioQueue)
+    if (queue_)
+    {
+        LOG(WARNING, LOG_TAG) << "AudioQueue already initialized, skipping\n";
+        return false;
+    }
+
     const SampleFormat& sampleFormat = pubStream_->getFormat();
 
     AudioStreamBasicDescription format;
