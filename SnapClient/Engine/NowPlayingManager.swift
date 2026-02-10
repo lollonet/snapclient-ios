@@ -330,17 +330,23 @@ final class NowPlayingManager: ObservableObject {
     // MARK: - Artwork Loading
 
     private func loadArtwork(from urlString: String) {
-        // Check cache first
-        if let cached = artworkCache[urlString] {
+        // Convert HTTP to HTTPS to comply with App Transport Security
+        // coverartarchive.org and most artwork servers support HTTPS
+        let secureUrlString = urlString.hasPrefix("http://")
+            ? urlString.replacingOccurrences(of: "http://", with: "https://")
+            : urlString
+
+        // Check cache first (use original URL as key for consistency)
+        if let cached = artworkCache[secureUrlString] {
             updateArtwork(cached)
             return
         }
 
         // Don't reload if already loading this URL
-        guard urlString != currentArtworkURL else { return }
-        currentArtworkURL = urlString
+        guard secureUrlString != currentArtworkURL else { return }
+        currentArtworkURL = secureUrlString
 
-        guard let url = URL(string: urlString) else { return }
+        guard let url = URL(string: secureUrlString) else { return }
 
         Task {
             do {
@@ -373,21 +379,21 @@ final class NowPlayingManager: ObservableObject {
                 guard let preparedImage else { return }
 
                 // Now on MainActor, the image is fully decoded and ready
-                await MainActor.run {
+                await MainActor.run { [secureUrlString] in
                     // Capture prepared image - it's already decompressed
                     let capturedImage = preparedImage
                     let artwork = MPMediaItemArtwork(boundsSize: capturedImage.size) { _ in capturedImage }
 
                     // Cache it with FIFO eviction
-                    cacheArtwork(artwork, for: urlString)
+                    cacheArtwork(artwork, for: secureUrlString)
 
                     // Update if still current
-                    if currentArtworkURL == urlString {
+                    if currentArtworkURL == secureUrlString {
                         updateArtwork(artwork)
                     }
 
                     #if DEBUG
-                    print("[NowPlaying] Artwork loaded and decompressed from \(urlString)")
+                    print("[NowPlaying] Artwork loaded from \(secureUrlString)")
                     #endif
                 }
             } catch {
