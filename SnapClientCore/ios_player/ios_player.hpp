@@ -75,15 +75,19 @@ private:
     size_t frames_;
     size_t buff_size_;
     AudioQueueRef queue_{nullptr};
-    AudioQueueTimelineRef timeLine_{nullptr};  // Initialize to nullptr for safe lifecycle
     std::shared_ptr<Stream> pubStream_;
     uint64_t lastChunkTick{0};
 
     // Thread-safe signaling for callback -> worker communication
     std::atomic<bool> needsReinit_{false};      // Signal worker to reinit audio queue
     std::atomic<bool> shutdownRequested_{false}; // Signal clean shutdown
-    CFRunLoopRef workerRunLoop_{nullptr};       // Store worker's runloop reference
-    std::mutex queueMutex_;                     // Protect queue_ access
+    std::mutex queueMutex_;                     // Protect queue_ lifecycle (create/destroy)
+
+    // Real-time safety: atomic pointers and state for lock-free callback
+    std::atomic<CFRunLoopRef> workerRunLoop_{nullptr};       // Worker's runloop (atomic for callback access)
+    std::atomic<AudioQueueTimelineRef> timeLine_{nullptr};   // Timeline (atomic for callback access)
+    std::atomic<bool> callbackActive_{false};                // True while callback is executing
+    std::atomic<uint32_t> callbackGeneration_{0};            // Incremented on each queue init/cleanup
 };
 
 } // namespace player
