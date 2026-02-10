@@ -76,3 +76,47 @@ targets:
         CFBundleDisplayName: SnapForge
     dependencies: []
     preBuildScripts: []
+
+  SnapClientTests:
+    type: bundle.unit-test
+    platform: iOS
+    supportedDestinations: [iOS]
+    sources:
+      - path: Tests
+        excludes:
+          - "**/.DS_Store"
+          - "**/*.cpp"  # C++ tests are built separately
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.snapforge.snapclient.tests
+        INFOPLIST_GENERATION_MODE: GeneratedFile
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: SnapClient/Engine/Bridge/SnapClientCore-Bridging-Header.h
+        LIBRARY_SEARCH_PATHS:
+          - $(PROJECT_DIR)/build/deps/snapclient_core
+          - $(PROJECT_DIR)/SnapClientCore/vendor/flac/lib
+          - $(PROJECT_DIR)/SnapClientCore/vendor/opus/lib
+          - $(PROJECT_DIR)/SnapClientCore/vendor/ogg/lib
+        HEADER_SEARCH_PATHS:
+          - $(PROJECT_DIR)/SnapClientCore/bridge
+          - $(PROJECT_DIR)/SnapClientCore/ios_shim
+          - $(PROJECT_DIR)/SnapClientCore/ios_player
+          - $(PROJECT_DIR)/SnapClientCore/vendor/snapcast
+          - $(PROJECT_DIR)/SnapClientCore/vendor/snapcast/client
+          - $(PROJECT_DIR)/SnapClientCore/vendor/snapcast/common
+          - $(PROJECT_DIR)/SnapClientCore/vendor/boost
+          - $(PROJECT_DIR)/SnapClientCore/vendor/flac/include
+          - $(PROJECT_DIR)/SnapClientCore/vendor/opus/include
+          - $(PROJECT_DIR)/SnapClientCore/vendor/ogg/include
+        OTHER_LDFLAGS:
+          - -lsnapclient_bridge
+          - -lsnapclient_core
+          - -lFLAC
+          - -lopus
+          - -logg
+          - -lc++
+          - -framework AudioToolbox
+          - -framework CoreFoundation
+          - -framework Foundation
+    dependencies:
+      - target: SnapClient
