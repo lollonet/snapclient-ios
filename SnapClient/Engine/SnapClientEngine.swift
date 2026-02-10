@@ -200,8 +200,10 @@ final class SnapClientEngine: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
         }
 
-        // Unregister log callback
-        snapclient_set_log_callback(nil, nil)
+        // Unregister instance-specific log callback (not global, to avoid multi-instance conflicts)
+        if let ref = clientRef {
+            snapclient_set_instance_log_callback(ref, nil, nil)
+        }
 
         // CRITICAL: Block callbacks SYNCHRONOUSLY before deinit returns.
         // This sets `destroying = true` on each client, which causes CallbackGuard
@@ -742,8 +744,10 @@ final class SnapClientEngine: ObservableObject {
     }
 
     private func registerLogCallback() {
+        guard let ref = clientRef else { return }
         let ctx = Unmanaged.passUnretained(self).toOpaque()
-        snapclient_set_log_callback({ ctx, level, msg in
+        // Use per-instance log callback to avoid multi-instance conflicts
+        snapclient_set_instance_log_callback(ref, { ctx, level, msg in
             guard let ctx, let msg else { return }
             let engine = Unmanaged<SnapClientEngine>.fromOpaque(ctx)
                 .takeUnretainedValue()

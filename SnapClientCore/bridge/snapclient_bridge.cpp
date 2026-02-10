@@ -41,9 +41,16 @@ static os_log_t bridge_log() {
 
 /* ── Log callback ──────────────────────────────────────────────── */
 
+// Global fallback log callback (used when no instance-specific callback is set)
+// This is kept for backward compatibility and for logs before any client is created.
 static SnapClientLogCallback g_log_cb = nullptr;
 static void* g_log_ctx = nullptr;
 static std::mutex g_log_mutex;
+
+// Forward declaration for per-instance logging
+struct SnapClient;
+static void instance_log_msg(SnapClient* client, SnapClientLogLevel level, const char* fmt, ...)
+    __attribute__((format(printf, 3, 4)));
 
 void snapclient_set_log_callback(SnapClientLogCallback callback, void* ctx) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
@@ -91,6 +98,12 @@ static void bridge_log_msg(SnapClientLogLevel level, const char* fmt, ...) {
 #define BLOG_WARN(...)    bridge_log_msg(SNAPCLIENT_LOG_WARNING, __VA_ARGS__)
 #define BLOG_ERROR(...)   bridge_log_msg(SNAPCLIENT_LOG_ERROR, __VA_ARGS__)
 
+// Instance-specific logging macros (use when client pointer is available)
+#define ILOG_DEBUG(c, ...)   instance_log_msg(c, SNAPCLIENT_LOG_DEBUG, __VA_ARGS__)
+#define ILOG_INFO(c, ...)    instance_log_msg(c, SNAPCLIENT_LOG_INFO, __VA_ARGS__)
+#define ILOG_WARN(c, ...)    instance_log_msg(c, SNAPCLIENT_LOG_WARNING, __VA_ARGS__)
+#define ILOG_ERROR(c, ...)   instance_log_msg(c, SNAPCLIENT_LOG_ERROR, __VA_ARGS__)
+
 /* ── Internal state ─────────────────────────────────────────────── */
 
 // Type alias for work guard
@@ -133,6 +146,10 @@ struct SnapClient {
     void* state_ctx = nullptr;
     SnapClientSettingsCallback settings_cb = nullptr;
     void* settings_ctx = nullptr;
+
+    // Per-instance log callback (takes precedence over global)
+    SnapClientLogCallback log_cb = nullptr;
+    void* log_ctx = nullptr;
 };
 
 /// RAII guard for callback scope - prevents callbacks during destroy
@@ -162,6 +179,49 @@ struct CallbackGuard {
 
     explicit operator bool() const { return valid; }
 };
+
+/* ── Instance-specific logging ──────────────────────────────────── */
+
+/// Log with instance-specific callback (falls back to global if not set)
+static void instance_log_msg(SnapClient* client, SnapClientLogLevel level, const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+#ifdef IOS
+    os_log_type_t type = OS_LOG_TYPE_DEFAULT;
+    switch (level) {
+        case SNAPCLIENT_LOG_DEBUG:   type = OS_LOG_TYPE_DEBUG; break;
+        case SNAPCLIENT_LOG_INFO:    type = OS_LOG_TYPE_INFO; break;
+        case SNAPCLIENT_LOG_WARNING: type = OS_LOG_TYPE_DEFAULT; break;
+        case SNAPCLIENT_LOG_ERROR:   type = OS_LOG_TYPE_ERROR; break;
+    }
+    os_log_with_type(bridge_log(), type, "%{public}s", buf);
+#endif
+
+    // Try instance-specific callback first
+    SnapClientLogCallback cb = nullptr;
+    void* ctx = nullptr;
+
+    if (client) {
+        std::lock_guard<std::recursive_mutex> lock(client->mutex);
+        cb = client->log_cb;
+        ctx = client->log_ctx;
+    }
+
+    // Fall back to global callback if no instance callback
+    if (!cb) {
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        cb = g_log_cb;
+        ctx = g_log_ctx;
+    }
+
+    if (cb) {
+        cb(ctx, level, buf);
+    }
+}
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 
@@ -465,6 +525,17 @@ void snapclient_set_settings_callback(SnapClientRef client,
     std::lock_guard<std::recursive_mutex> lock(client->mutex);
     client->settings_cb = callback;
     client->settings_ctx = ctx;
+}
+
+void snapclient_set_instance_log_callback(SnapClientRef client,
+                                          SnapClientLogCallback callback,
+                                          void* ctx) {
+    if (!client) return;
+    if (client->destroying.load(std::memory_order_acquire)) return;  // Reject during destroy
+
+    std::lock_guard<std::recursive_mutex> lock(client->mutex);
+    client->log_cb = callback;
+    client->log_ctx = ctx;
 }
 
 /* ── Audio session ──────────────────────────────────────────────── */

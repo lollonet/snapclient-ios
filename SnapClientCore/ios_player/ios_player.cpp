@@ -22,6 +22,7 @@
 
 // local headers
 #include "common/aixlog.hpp"
+#include "ios_audio_latency.h"
 
 // Thread priority for real-time audio
 #include <pthread.h>
@@ -208,8 +209,19 @@ void IOSPlayer::playerCallback(AudioQueueRef queue, AudioQueueBufferRef bufferRe
         size_t bufferedFrames = (frames_ - ((uint64_t)timestamp.mSampleTime % frames_)) % frames_;
         bufferedMs = bufferedFrames * 1000 / pubStream_->getFormat().rate() + (ms_ * (NUM_BUFFERS - 1));
     }
-    // 15ms DAC delay. Based on trying.
-    bufferedMs += 15;
+
+    // Add actual hardware DAC latency from AVAudioSession
+    // This replaces the hardcoded 15ms guess with real hardware-reported latency
+    double dacLatencyMs = ios_get_audio_output_latency_ms();
+    if (dacLatencyMs > 0)
+    {
+        bufferedMs += static_cast<size_t>(dacLatencyMs + 0.5);  // Round to nearest ms
+    }
+    else
+    {
+        // Fallback to conservative estimate if AVAudioSession reports 0
+        bufferedMs += 15;
+    }
 
     chronos::usec delay(bufferedMs * 1000);
     if (!pubStream_->getPlayerChunkOrSilence(buffer, delay, frames_))
