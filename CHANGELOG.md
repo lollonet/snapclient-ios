@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-02-10
+
 ### Added
 - **Initial iOS Client** - Feb 3
   - SwiftUI-based Snapcast client with server discovery
@@ -85,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Clock drift fix (TimeProvider reset at connection start)
   - Incremental RPC updates (~90% network reduction)
   - UI performance: background image decompression
+
+- **Final Hardening** ([#25](https://github.com/lollonet/snapclient-ios/pull/25)) - Feb 10
+  - Clock skew fix: reset TimeProvider on foreground resume
+  - Visual style warnings: background-safe artwork decompression
+  - Per-instance log callbacks: prevents multi-instance conflicts
+  - Dynamic DAC latency: uses actual hardware latency for sync
 
 ### Maintenance
 - **CI/CD Setup** ([#5](https://github.com/lollonet/snapclient-ios/pull/5)) - Feb 4
