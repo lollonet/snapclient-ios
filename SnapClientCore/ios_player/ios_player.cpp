@@ -87,16 +87,27 @@ IOSPlayer::IOSPlayer(boost::asio::io_context& io_context, const ClientSettings::
 IOSPlayer::~IOSPlayer()
 {
     LOG(INFO, LOG_TAG) << "Destroying IOSPlayer, requesting shutdown\n";
+
+    // Signal shutdown to the worker thread
     shutdownRequested_.store(true, std::memory_order_release);
-    active_ = false;
 
     // Wake up worker thread if it's blocked in CFRunLoopRun
-    // Atomic load - no mutex needed
     CFRunLoopRef runLoop = workerRunLoop_.load(std::memory_order_acquire);
     if (runLoop)
     {
         CFRunLoopStop(runLoop);
     }
+
+    // CRITICAL: Call stop() to join the worker thread BEFORE this destructor
+    // returns. The base class destructor will also call stop(), but we must
+    // do it here because:
+    // 1. The base class checks `if (active_)` before joining
+    // 2. If we set active_=false here, the base class skips the join
+    // 3. The worker thread then accesses destroyed IOSPlayer members = crash
+    //
+    // By calling stop() here (while active_ is still true), we ensure the
+    // thread is properly joined before IOSPlayer members are destroyed.
+    stop();
 }
 
 
