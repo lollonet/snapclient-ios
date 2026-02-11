@@ -131,6 +131,11 @@ final class SnapClientEngine: ObservableObject {
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
     private var foregroundObserver: NSObjectProtocol?
+    private var backgroundObserver: NSObjectProtocol?
+    private var backgroundTimestamp: Date?
+
+    /// Only reset clock if backgrounded for longer than this (avoids audio glitch on quick switches)
+    private let clockResetThreshold: TimeInterval = 30.0
 
     /// Zombie refs that timed out during stop - let them clean up in background
     /// This prevents stuck C++ instances from blocking new connections
@@ -835,6 +840,10 @@ final class SnapClientEngine: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             foregroundObserver = nil
         }
+        if let observer = backgroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+            backgroundObserver = nil
+        }
 
         // Audio interruption (phone call, Siri, etc.)
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -858,7 +867,18 @@ final class SnapClientEngine: ObservableObject {
             }
         }
 
-        // App returning to foreground - reset clock to prevent skew after suspension
+        // App going to background - track timestamp for clock reset decision
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.backgroundTimestamp = Date()
+            }
+        }
+
+        // App returning to foreground - reset clock only if backgrounded for a long time
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
@@ -871,12 +891,24 @@ final class SnapClientEngine: ObservableObject {
     }
 
     private func handleForegroundResume() {
-        // Reset TimeProvider clock synchronization to prevent skew after app suspension.
-        // When iOS suspends the app, the internal clock state becomes stale and can
-        // cause massive drift (e.g., -46 hours) leading to silent playback failure.
-        guard state.isActive else { return }
-        log.info("Foreground resume: resetting clock synchronization")
-        snapclient_reset_clock()
+        // Only reset clock if we were backgrounded for a long time.
+        // Short background periods (e.g., quick app switch) don't cause clock drift,
+        // and resetting unnecessarily causes a brief audio glitch.
+        guard state.isActive else {
+            backgroundTimestamp = nil
+            return
+        }
+
+        let backgroundDuration = backgroundTimestamp.map { Date().timeIntervalSince($0) } ?? 0
+        backgroundTimestamp = nil
+
+        if backgroundDuration > clockResetThreshold {
+            // Long background period - clock may have drifted, reset to prevent sync issues
+            log.info("Foreground resume after \(Int(backgroundDuration))s: resetting clock synchronization")
+            snapclient_reset_clock()
+        } else {
+            log.debug("Foreground resume after \(Int(backgroundDuration))s: clock reset not needed")
+        }
     }
 
     private func handleRouteChange(_ notification: Notification) {
