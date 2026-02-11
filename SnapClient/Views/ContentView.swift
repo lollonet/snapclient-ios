@@ -22,6 +22,11 @@ struct ContentView: View {
                 .tabItem {
                     Label("Servers", systemImage: "network")
                 }
+
+            AboutView()
+                .tabItem {
+                    Label("About", systemImage: "info.circle")
+                }
         }
         .alert("Error", isPresented: $rpcClient.showError) {
             Button("OK") { }
