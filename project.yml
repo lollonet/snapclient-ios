@@ -73,7 +73,7 @@ targets:
         NSLocalNetworkUsageDescription: "SnapClient needs local network access to discover and connect to Snapcast servers."
         NSBonjourServices:
           - "_snapcast._tcp"
-        CFBundleDisplayName: SnapForge
+        CFBundleDisplayName: SnapCTRL
     dependencies: []
     preBuildScripts: []
 

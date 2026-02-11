@@ -69,7 +69,7 @@ struct PlayerView: View {
                     .frame(minHeight: geometry.size.height)
                 }
             }
-            .navigationTitle("SnapForge")
+            .navigationTitle("SnapCTRL")
             .onAppear {
                 discovery.startBrowsing()
             }

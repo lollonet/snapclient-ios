@@ -13,18 +13,20 @@ struct AboutView: View {
                     HStack {
                         Spacer()
                         VStack(spacing: 12) {
-                            Image(systemName: "hifispeaker.2.fill")
-                                .font(.system(size: 60))
-                                .foregroundStyle(.blue)
+                            Image("AboutIcon")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 100, height: 100)
+                                .clipShape(RoundedRectangle(cornerRadius: 22))
 
-                            Text("SnapClient")
+                            Text("SnapCTRL")
                                 .font(.title.bold())
 
                             Text("Version \(appVersion) (\(buildNumber))")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
 
-                            Text("iOS client for Snapcast multi-room audio")
+                            Text("Snapcast client for iOS")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
