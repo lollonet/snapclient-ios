@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Support - SnapCTRL</title>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --text: #1d1d1f;
+            --secondary: #86868b;
+            --accent: #0071e3;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #000000;
+                --text: #f5f5f7;
+                --secondary: #86868b;
+                --accent: #2997ff;
+            }
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 40px 20px;
+            max-width: 680px;
+            margin: 0 auto;
+        }
+        h1 { font-size: 2em; font-weight: 600; margin-bottom: 0.5em; }
+        h2 { font-size: 1.3em; font-weight: 600; margin-top: 1.5em; margin-bottom: 0.5em; }
+        p { margin-bottom: 1em; color: var(--text); }
+        .subtitle { color: var(--secondary); font-size: 1.1em; margin-bottom: 2em; }
+        ul { margin-left: 1.5em; margin-bottom: 1em; }
+        li { margin-bottom: 0.5em; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .card {
+            background: var(--bg);
+            border: 1px solid var(--secondary);
+            border-radius: 12px;
+            padding: 20px;
+            margin: 1em 0;
+        }
+        .card h3 { font-size: 1.1em; margin-bottom: 0.5em; }
+        .btn {
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 500;
+            margin-top: 0.5em;
+        }
+        .btn:hover { text-decoration: none; opacity: 0.9; }
+        .footer { margin-top: 3em; padding-top: 2em; border-top: 1px solid var(--secondary); color: var(--secondary); font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <h1>Support</h1>
+    <p class="subtitle">Get help with SnapCTRL</p>
+
+    <div class="card">
+        <h3>Report a Bug or Request a Feature</h3>
+        <p>Found a bug or have an idea for improvement? Open an issue on GitHub.</p>
+        <a href="https://github.com/lollonet/snapclient-ios/issues/new" class="btn">Open Issue</a>
+    </div>
+
+    <div class="card">
+        <h3>View Documentation</h3>
+        <p>Check the README and project documentation for setup instructions and usage guides.</p>
+        <a href="https://github.com/lollonet/snapclient-ios" class="btn">View on GitHub</a>
+    </div>
+
+    <h2>Frequently Asked Questions</h2>
+
+    <h3>What is Snapcast?</h3>
+    <p><a href="https://github.com/badaix/snapcast">Snapcast</a> is a multi-room client-server audio player. You need a Snapcast server running on your network to use SnapCTRL.</p>
+
+    <h3>Why can't I find my server?</h3>
+    <ul>
+        <li>Ensure your Snapcast server is running and on the same network</li>
+        <li>Check that your server has mDNS/Bonjour enabled</li>
+        <li>Try adding the server manually using its IP address</li>
+        <li>Verify that SnapCTRL has local network permission in iOS Settings</li>
+    </ul>
+
+    <h3>Why is there no audio?</h3>
+    <ul>
+        <li>Check that the server is streaming audio (source is playing)</li>
+        <li>Verify volume is not muted in the app or on the server</li>
+        <li>Ensure you're assigned to a group with an active stream</li>
+        <li>Check that iOS volume is turned up</li>
+    </ul>
+
+    <h3>Does it work with AirPlay?</h3>
+    <p>SnapCTRL receives audio from Snapcast servers, not from AirPlay sources. If your Snapcast server has an AirPlay source configured, it will work. Do not use AirPlay output from your iOS device to a Snapcast client as this creates a feedback loop.</p>
+
+    <h2>Contact</h2>
+    <p>For support inquiries, please use <a href="https://github.com/lollonet/snapclient-ios/issues">GitHub Issues</a>.</p>
+
+    <div class="footer">
+        <p>&copy; 2026 SnapForge Contributors. SnapCTRL is open source software licensed under the MIT License.</p>
+    </div>
+</body>
+</html>

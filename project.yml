@@ -57,6 +57,7 @@ targets:
           - -framework Foundation
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
+        CODE_SIGN_ENTITLEMENTS: SnapClient/SnapClient.entitlements
       configs:
         Debug:
           DEBUG_INFORMATION_FORMAT: dwarf-with-dsym

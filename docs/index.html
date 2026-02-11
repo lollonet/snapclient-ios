@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SnapCTRL - Snapcast Client for iOS</title>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --text: #1d1d1f;
+            --secondary: #86868b;
+            --accent: #0071e3;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #000000;
+                --text: #f5f5f7;
+                --secondary: #86868b;
+                --accent: #2997ff;
+            }
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 40px 20px;
+            max-width: 680px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        h1 { font-size: 2.5em; font-weight: 600; margin-bottom: 0.3em; }
+        .subtitle { color: var(--secondary); font-size: 1.2em; margin-bottom: 2em; }
+        .icon {
+            width: 120px;
+            height: 120px;
+            border-radius: 26px;
+            margin-bottom: 1.5em;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }
+        .links { margin: 2em 0; }
+        .links a {
+            display: inline-block;
+            color: var(--accent);
+            text-decoration: none;
+            margin: 0.5em 1em;
+            font-size: 1.1em;
+        }
+        .links a:hover { text-decoration: underline; }
+        .features {
+            text-align: left;
+            margin: 2em 0;
+            padding: 0 1em;
+        }
+        .features h2 {
+            font-size: 1.3em;
+            margin-bottom: 1em;
+            text-align: center;
+        }
+        .features ul {
+            list-style: none;
+            padding: 0;
+        }
+        .features li {
+            padding: 0.5em 0;
+            padding-left: 1.5em;
+            position: relative;
+        }
+        .features li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+        }
+        .btn {
+            display: inline-block;
+            background: var(--accent);
+            color: white;
+            padding: 14px 28px;
+            border-radius: 8px;
+            font-weight: 500;
+            text-decoration: none;
+            margin: 1em 0.5em;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn.secondary {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+        }
+        .footer { margin-top: 3em; padding-top: 2em; border-top: 1px solid var(--secondary); color: var(--secondary); font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <img src="https://raw.githubusercontent.com/lollonet/snapclient-ios/main/SnapClient/Assets.xcassets/AppIcon.appiconset/AppIcon.png" alt="SnapCTRL Icon" class="icon">
+
+    <h1>SnapCTRL</h1>
+    <p class="subtitle">Snapcast client for iOS</p>
+
+    <div class="features">
+        <h2>Features</h2>
+        <ul>
+            <li>Multi-room synchronized audio playback</li>
+            <li>Automatic server discovery via Bonjour</li>
+            <li>Lock screen & Control Center integration</li>
+            <li>Per-client volume and mute controls</li>
+            <li>Group and stream management</li>
+            <li>Background audio playback</li>
+            <li>Open source (MIT License)</li>
+        </ul>
+    </div>
+
+    <a href="https://github.com/lollonet/snapclient-ios" class="btn">View on GitHub</a>
+    <a href="https://github.com/badaix/snapcast" class="btn secondary">About Snapcast</a>
+
+    <div class="links">
+        <a href="privacy.html">Privacy Policy</a>
+        <a href="support.html">Support</a>
+    </div>
+
+    <div class="footer">
+        <p>&copy; 2026 SnapForge Contributors</p>
+        <p>SnapCTRL is not affiliated with the Snapcast project.</p>
+    </div>
+</body>
+</html>

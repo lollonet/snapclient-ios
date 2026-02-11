@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - SnapCTRL</title>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --text: #1d1d1f;
+            --secondary: #86868b;
+            --accent: #0071e3;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #000000;
+                --text: #f5f5f7;
+                --secondary: #86868b;
+                --accent: #2997ff;
+            }
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 40px 20px;
+            max-width: 680px;
+            margin: 0 auto;
+        }
+        h1 { font-size: 2em; font-weight: 600; margin-bottom: 0.5em; }
+        h2 { font-size: 1.3em; font-weight: 600; margin-top: 1.5em; margin-bottom: 0.5em; }
+        p { margin-bottom: 1em; color: var(--text); }
+        .meta { color: var(--secondary); font-size: 0.9em; margin-bottom: 2em; }
+        ul { margin-left: 1.5em; margin-bottom: 1em; }
+        li { margin-bottom: 0.5em; }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .footer { margin-top: 3em; padding-top: 2em; border-top: 1px solid var(--secondary); color: var(--secondary); font-size: 0.85em; }
+    </style>
+</head>
+<body>
+    <h1>Privacy Policy</h1>
+    <p class="meta">Last updated: February 11, 2026</p>
+
+    <p><strong>SnapCTRL</strong> is an open-source iOS client for Snapcast multi-room audio. We are committed to protecting your privacy.</p>
+
+    <h2>Data Collection</h2>
+    <p><strong>We do not collect any personal data.</strong></p>
+    <p>SnapCTRL operates entirely on your local network and does not transmit any information to external servers, analytics services, or third parties.</p>
+
+    <h2>Local Storage</h2>
+    <p>The app stores the following data locally on your device:</p>
+    <ul>
+        <li><strong>Server connection history</strong> - IP addresses and ports of Snapcast servers you've connected to, for auto-reconnect functionality</li>
+        <li><strong>Saved servers</strong> - Manually added server configurations</li>
+    </ul>
+    <p>This data never leaves your device and can be cleared by deleting the app.</p>
+
+    <h2>Network Access</h2>
+    <p>SnapCTRL requires local network access to:</p>
+    <ul>
+        <li>Discover Snapcast servers via Bonjour/mDNS</li>
+        <li>Connect to Snapcast servers for audio streaming</li>
+        <li>Communicate with servers via JSON-RPC for control functions</li>
+    </ul>
+    <p>All network communication occurs only within your local network.</p>
+
+    <h2>Third-Party Services</h2>
+    <p>SnapCTRL does not integrate with any third-party analytics, advertising, or tracking services.</p>
+
+    <h2>Children's Privacy</h2>
+    <p>SnapCTRL does not collect any data from anyone, including children under 13.</p>
+
+    <h2>Changes to This Policy</h2>
+    <p>We may update this policy occasionally. Changes will be posted on this page with an updated date.</p>
+
+    <h2>Contact</h2>
+    <p>For questions about this privacy policy, please open an issue on our <a href="https://github.com/lollonet/snapclient-ios/issues">GitHub repository</a>.</p>
+
+    <div class="footer">
+        <p>&copy; 2026 SnapForge Contributors. SnapCTRL is open source software licensed under the MIT License.</p>
+    </div>
+</body>
+</html>
