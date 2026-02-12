@@ -255,25 +255,20 @@ struct PlayerView: View {
     }
 
     private var technicalDetailsView: some View {
-        VStack(spacing: 4) {
-            if let host = engine.connectedHost {
-                Text(host)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+        VStack(spacing: 2) {
             if let client = currentClient {
-                Text("ID: \(client.id)")
+                // Host + Client name in one line
+                let clientName = client.config.name.isEmpty ? client.id : client.config.name
+                Text("\(engine.connectedHost ?? "") • \(clientName)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                if !client.config.name.isEmpty {
-                    Text("Name: \(client.config.name)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                    .lineLimit(1)
             } else {
-                Text("ID: \(myClientId)")
+                // Not found on server
+                Text("\(engine.connectedHost ?? "") • \(myClientId)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                 Text("(not found on server)")
                     .font(.caption2)
                     .foregroundStyle(.red)

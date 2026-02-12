@@ -62,7 +62,7 @@ struct ServersView: View {
                                     name: server.displayName,
                                     host: server.host,
                                     port: server.port,
-                                    fqdn: server.name,
+                                    hostname: server.hostname,
                                     isConnected: engine.connectedHost == server.host
                                 )
                             }
@@ -83,7 +83,7 @@ struct ServersView: View {
                                     name: server.displayName,
                                     host: server.host,
                                     port: server.port,
-                                    fqdn: nil,
+                                    hostname: nil,
                                     isConnected: engine.connectedHost == server.host
                                 )
                             }
@@ -169,7 +169,7 @@ struct ServersView: View {
                     }
                 }
 
-                // Version info (collapsed)
+                // Version info
                 Section("Version") {
                     LabeledContent("Core", value: engine.coreVersion)
                     LabeledContent("Protocol", value: "\(engine.protocolVersion)")
@@ -222,7 +222,7 @@ private struct ServerRow: View {
     let name: String
     let host: String
     let port: Int
-    let fqdn: String?
+    let hostname: String?  // Resolved hostname (from reverse DNS)
     let isConnected: Bool
 
     var body: some View {
@@ -237,13 +237,13 @@ private struct ServerRow: View {
                             .font(.caption)
                     }
                 }
-                // Show FQDN if different from name and host
-                if let fqdn, !fqdn.isEmpty, fqdn != name, fqdn != host {
-                    Text(fqdn)
+                // Show hostname if we have it and it's different from display name
+                if let hostname, !hostname.isEmpty, hostname != name, hostname != host {
+                    Text(hostname)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                Text("\(host):\(port)")
+                Text("\(host):\(String(port))")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
