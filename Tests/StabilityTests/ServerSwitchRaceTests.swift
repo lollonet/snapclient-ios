@@ -154,8 +154,8 @@ final class ServerSwitchRaceTests: XCTestCase {
             // The most recent target should always be the last one we called
             let diag = engine.diagnostics
             if let target = diag.activeConnectionTarget {
-                XCTAssertTrue(target.hasPrefix(server),
-                             "Active target \(target) should match most recent server \(server)")
+                XCTAssertTrue(target.hasPrefix(server.0),
+                             "Active target \(target) should match most recent server \(server.0)")
             }
         }
 
