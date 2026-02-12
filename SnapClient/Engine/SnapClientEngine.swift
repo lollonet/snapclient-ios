@@ -414,7 +414,11 @@ final class SnapClientEngine: ObservableObject {
             await MainActor.run { [weak self] in
                 guard let self else { return }
 
-                // Check we're still the owner before updating state
+                // Check we're still the owner before updating state.
+                // stillOwner is true if:
+                // 1. We're still the current target (exact match), OR
+                // 2. Target is nil (no one else claimed ownership - happens when
+                //    previous task completed and cleared target before we got here)
                 let stillOwner = self.activeConnectionTarget == targetForCleanup ||
                                  self.activeConnectionTarget == nil
                 guard stillOwner else {
