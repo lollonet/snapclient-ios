@@ -30,3 +30,12 @@ Maintainers MUST adhere to these rules:
 The engine exposes a `diagnostics` struct for real-time monitoring:
 - `activeZombiesCount`: Number of stale C++ threads pending cleanup.
 - `isStopTaskHanging`: Detects if the C++ bridge is blocked by a TCP timeout.
+
+## 4. Logging
+Uses Apple's **Unified Logging** (`os.log`) for production diagnostics:
+- **Efficient:** Near-zero overhead when not actively observed
+- **Persistent:** Logs survive app termination, viewable in Console.app
+- **Leveled:** `debug` (verbose), `info` (expected events), `warning`, `error`
+- **No release impact:** Unlike `print()`, doesn't block or slow release builds
+
+Log categories: `Engine` (core lifecycle), `RPC` (WebSocket/JSON-RPC).
