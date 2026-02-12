@@ -426,6 +426,7 @@ final class SnapClientEngine: ObservableObject {
                     return
                 }
 
+                // Update connection state based on result
                 if success {
                     log.info("[\(instanceId)] snapclient_start succeeded for \(hostCopy):\(portCopy)")
                     self.connectedHost = hostCopy
@@ -435,7 +436,7 @@ final class SnapClientEngine: ObservableObject {
                     log.error("[\(instanceId)] snapclient_start FAILED for \(hostCopy):\(portCopy) - C++ client returned false")
                 }
 
-                // Cleanup ownership tracking
+                // Clear ownership tracking regardless of result
                 self.activeConnectionTarget = nil
                 self.isConnecting = false
             }

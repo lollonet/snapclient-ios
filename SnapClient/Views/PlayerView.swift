@@ -9,15 +9,9 @@ struct PlayerView: View {
 
     @State private var showTechnicalDetails = false
 
-    /// Our unique client ID - uses the shared static property from SnapClientEngine
-    private var myClientId: String {
-        SnapClientEngine.uniqueClientId
-    }
-
     /// Find our client in the server status by matching our unique ID.
     private var currentClient: SnapcastClient? {
-        guard let clients = rpcClient.serverStatus?.allClients else { return nil }
-        return clients.first { $0.id == myClientId }
+        rpcClient.serverStatus?.client(withId: SnapClientEngine.uniqueClientId)
     }
 
     /// Server-side volume for our client (for change observation)
@@ -116,7 +110,7 @@ struct PlayerView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 12))
                             .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
                     } else if let artUrlString = meta.artUrl,
-                              let artUrl = Self.secureURL(from: artUrlString) {
+                              let artUrl = URL.secureURL(from: artUrlString) {
                         // URL artwork (with HTTP→HTTPS conversion)
                         AsyncImage(url: artUrl) { phase in
                             switch phase {
@@ -178,14 +172,6 @@ struct PlayerView: View {
                 .foregroundStyle(.secondary.opacity(0.5))
         }
         .frame(width: adaptiveAlbumSize, height: adaptiveAlbumSize)
-    }
-
-    /// Convert HTTP URLs to HTTPS for App Transport Security compliance
-    private static func secureURL(from urlString: String) -> URL? {
-        let secure = urlString.hasPrefix("http://")
-            ? urlString.replacingOccurrences(of: "http://", with: "https://")
-            : urlString
-        return URL(string: secure)
     }
 
     // MARK: - Controls Card
@@ -265,7 +251,7 @@ struct PlayerView: View {
                     .lineLimit(1)
             } else {
                 // Not found on server
-                Text("\(engine.connectedHost ?? "") • \(myClientId)")
+                Text("\(engine.connectedHost ?? "") • \(SnapClientEngine.uniqueClientId)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)

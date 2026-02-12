@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let log = Logger(subsystem: "com.snapforge.snapclient", category: "RPC")
 
 // MARK: - Data Models
 
@@ -120,6 +123,22 @@ struct ServerStatus: Codable, Sendable {
 
     var allClients: [SnapcastClient] {
         groups.flatMap(\.clients)
+    }
+
+    /// Find a client by ID across all groups.
+    func client(withId id: String) -> SnapcastClient? {
+        allClients.first { $0.id == id }
+    }
+
+    /// Find the indices for a client in the groups array.
+    /// Returns (groupIndex, clientIndex) or nil if not found.
+    func clientIndices(for clientId: String) -> (groupIndex: Int, clientIndex: Int)? {
+        for groupIndex in groups.indices {
+            if let clientIndex = groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
+                return (groupIndex, clientIndex)
+            }
+        }
+        return nil
     }
 }
 
@@ -445,22 +464,16 @@ final class SnapcastRPCClient: ObservableObject {
         return result
     }
 
-    /// Verifies that the given WebSocket is still the active instance.
-    /// Returns true if the websocket is still current, false if it's stale.
-    private func isActiveWebSocket(_ websocket: URLSessionWebSocketTask) async -> Bool {
-        return await MainActor.run { self.webSocket === websocket }
-    }
-
     /// Handle disconnect only if the given websocket is still the active one.
     /// Returns true if disconnect was handled, false if websocket was stale.
     private func handleDisconnectIfActive(_ websocket: URLSessionWebSocketTask, context: String) async -> Bool {
-        if await isActiveWebSocket(websocket) {
+        let isActive = await MainActor.run { self.webSocket === websocket }
+        if isActive {
             await MainActor.run { self.handleDisconnect() }
+            log.info("[\(context)] handled disconnect for active websocket")
             return true
         } else {
-            #if DEBUG
-            print("[RPC] skipping handleDisconnect for stale \(context) websocket")
-            #endif
+            log.debug("[\(context)] skipping handleDisconnect for stale websocket")
             return false
         }
     }
@@ -470,41 +483,44 @@ final class SnapcastRPCClient: ObservableObject {
         // This prevents a race condition where a server switch causes
         // the old task's error handler to tear down the NEW connection.
         guard let currentWebSocket = webSocket else {
-            #if DEBUG
-            print("[RPC] startReceiving: webSocket is nil, cannot start")
-            #endif
+            log.warning("startReceiving: webSocket is nil, cannot start")
             return
         }
 
         receiveTask = Task { [weak self, currentWebSocket] in
             guard let self else { return }
-            #if DEBUG
-            print("[RPC] startReceiving loop started")
-            #endif
+            log.debug("receive loop started")
             while !Task.isCancelled {
                 do {
                     // Check that our websocket is still the active one
-                    guard await isActiveWebSocket(currentWebSocket) else {
-                        #if DEBUG
-                        print("[RPC] webSocket changed, exiting stale receive loop")
-                        #endif
+                    let isActive = await MainActor.run { self.webSocket === currentWebSocket }
+                    guard isActive else {
+                        log.debug("webSocket changed, exiting stale receive loop")
                         break
                     }
                     let message = try await currentWebSocket.receive()
                     await MainActor.run {
                         self.handleMessage(message)
                     }
+                } catch let urlError as URLError {
+                    // Expected WebSocket/network errors - log at info level
+                    log.info("receive connection error: \(urlError.localizedDescription)")
+                    let handled = await handleDisconnectIfActive(currentWebSocket, context: "receive")
+                    if !handled {
+                        log.debug("receive error on stale websocket, no action needed")
+                    }
+                    break
                 } catch {
-                    #if DEBUG
-                    print("[RPC] receive error: \(error)")
-                    #endif
-                    _ = await handleDisconnectIfActive(currentWebSocket, context: "receive")
+                    // Unexpected errors - log at error level for debugging
+                    log.error("receive unexpected error: \(error.localizedDescription)")
+                    let handled = await handleDisconnectIfActive(currentWebSocket, context: "receive")
+                    if !handled {
+                        log.debug("unexpected error on stale websocket, no action needed")
+                    }
                     break
                 }
             }
-            #if DEBUG
-            print("[RPC] receive loop ended")
-            #endif
+            log.debug("receive loop ended")
         }
     }
 
@@ -512,24 +528,29 @@ final class SnapcastRPCClient: ObservableObject {
         // CRITICAL: Capture the websocket instance this task monitors.
         // Prevents stale ping tasks from interfering with new connections.
         guard let currentWebSocket = webSocket else {
-            #if DEBUG
-            print("[RPC] startPinging: webSocket is nil, cannot start")
-            #endif
+            log.warning("startPinging: webSocket is nil, cannot start")
             return
         }
 
         pingTask = Task { [weak self, currentWebSocket] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.pingInterval ?? 30))
+                do {
+                    try await Task.sleep(for: .seconds(self?.pingInterval ?? 30))
+                } catch is CancellationError {
+                    // Expected during shutdown
+                    break
+                } catch {
+                    log.warning("ping sleep interrupted: \(error.localizedDescription)")
+                    break
+                }
                 guard !Task.isCancelled else { break }
 
                 guard let self else { break }
 
                 // Check that our websocket is still the active one
-                guard await isActiveWebSocket(currentWebSocket) else {
-                    #if DEBUG
-                    print("[RPC] webSocket changed, exiting stale ping loop")
-                    #endif
+                let isActive = await MainActor.run { self.webSocket === currentWebSocket }
+                guard isActive else {
+                    log.debug("webSocket changed, exiting stale ping loop")
                     break
                 }
 
@@ -543,14 +564,22 @@ final class SnapcastRPCClient: ObservableObject {
                             }
                         }
                     }
-                    #if DEBUG
-                    print("[RPC] ping/pong ok")
-                    #endif
+                    log.debug("ping/pong ok")
+                } catch let urlError as URLError {
+                    // Expected network errors
+                    log.info("ping connection error: \(urlError.localizedDescription)")
+                    let handled = await handleDisconnectIfActive(currentWebSocket, context: "ping")
+                    if !handled {
+                        log.debug("ping error on stale websocket, no action needed")
+                    }
+                    break
                 } catch {
-                    #if DEBUG
-                    print("[RPC] ping failed: \(error)")
-                    #endif
-                    _ = await handleDisconnectIfActive(currentWebSocket, context: "ping")
+                    // Unexpected errors
+                    log.error("ping unexpected error: \(error.localizedDescription)")
+                    let handled = await handleDisconnectIfActive(currentWebSocket, context: "ping")
+                    if !handled {
+                        log.debug("unexpected ping error on stale websocket, no action needed")
+                    }
                     break
                 }
             }
@@ -685,51 +714,38 @@ final class SnapcastRPCClient: ObservableObject {
             guard let clientId = params["id"] as? String,
                   let volumeDict = params["volume"] as? [String: Any],
                   let percent = volumeDict["percent"] as? Int,
-                  let muted = volumeDict["muted"] as? Bool else {
+                  let muted = volumeDict["muted"] as? Bool,
+                  let indices = status.clientIndices(for: clientId) else {
                 return false
             }
-            // Update client volume in all groups
-            for groupIndex in status.groups.indices {
-                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
-                    status.groups[groupIndex].clients[clientIndex].config.volume = ClientVolume(percent: percent, muted: muted)
-                    serverStatus = status
-                    #if DEBUG
-                    print("[RPC] Incremental: Client \(clientId) volume -> \(percent)% muted=\(muted)")
-                    #endif
-                    return true
-                }
-            }
-            return false
+            status.groups[indices.groupIndex].clients[indices.clientIndex].config.volume = ClientVolume(percent: percent, muted: muted)
+            serverStatus = status
+            #if DEBUG
+            print("[RPC] Incremental: Client \(clientId) volume -> \(percent)% muted=\(muted)")
+            #endif
+            return true
 
         case "Client.OnNameChanged":
             guard let clientId = params["id"] as? String,
                   let configDict = params["config"] as? [String: Any],
-                  let name = configDict["name"] as? String else {
+                  let name = configDict["name"] as? String,
+                  let indices = status.clientIndices(for: clientId) else {
                 return false
             }
-            for groupIndex in status.groups.indices {
-                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
-                    status.groups[groupIndex].clients[clientIndex].config.name = name
-                    serverStatus = status
-                    return true
-                }
-            }
-            return false
+            status.groups[indices.groupIndex].clients[indices.clientIndex].config.name = name
+            serverStatus = status
+            return true
 
         case "Client.OnLatencyChanged":
             guard let clientId = params["id"] as? String,
                   let configDict = params["config"] as? [String: Any],
-                  let latency = configDict["latency"] as? Int else {
+                  let latency = configDict["latency"] as? Int,
+                  let indices = status.clientIndices(for: clientId) else {
                 return false
             }
-            for groupIndex in status.groups.indices {
-                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
-                    status.groups[groupIndex].clients[clientIndex].config.latency = latency
-                    serverStatus = status
-                    return true
-                }
-            }
-            return false
+            status.groups[indices.groupIndex].clients[indices.clientIndex].config.latency = latency
+            serverStatus = status
+            return true
 
         case "Client.OnConnect", "Client.OnDisconnect":
             // These require full refresh since client list changes
