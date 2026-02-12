@@ -124,6 +124,22 @@ struct ServerStatus: Codable, Sendable {
     var allClients: [SnapcastClient] {
         groups.flatMap(\.clients)
     }
+
+    /// Find a client by ID across all groups.
+    func client(withId id: String) -> SnapcastClient? {
+        allClients.first { $0.id == id }
+    }
+
+    /// Find the indices for a client in the groups array.
+    /// Returns (groupIndex, clientIndex) or nil if not found.
+    func clientIndices(for clientId: String) -> (groupIndex: Int, clientIndex: Int)? {
+        for groupIndex in groups.indices {
+            if let clientIndex = groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
+                return (groupIndex, clientIndex)
+            }
+        }
+        return nil
+    }
 }
 
 // MARK: - JSON-RPC types
@@ -698,51 +714,38 @@ final class SnapcastRPCClient: ObservableObject {
             guard let clientId = params["id"] as? String,
                   let volumeDict = params["volume"] as? [String: Any],
                   let percent = volumeDict["percent"] as? Int,
-                  let muted = volumeDict["muted"] as? Bool else {
+                  let muted = volumeDict["muted"] as? Bool,
+                  let indices = status.clientIndices(for: clientId) else {
                 return false
             }
-            // Update client volume in all groups
-            for groupIndex in status.groups.indices {
-                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
-                    status.groups[groupIndex].clients[clientIndex].config.volume = ClientVolume(percent: percent, muted: muted)
-                    serverStatus = status
-                    #if DEBUG
-                    print("[RPC] Incremental: Client \(clientId) volume -> \(percent)% muted=\(muted)")
-                    #endif
-                    return true
-                }
-            }
-            return false
+            status.groups[indices.groupIndex].clients[indices.clientIndex].config.volume = ClientVolume(percent: percent, muted: muted)
+            serverStatus = status
+            #if DEBUG
+            print("[RPC] Incremental: Client \(clientId) volume -> \(percent)% muted=\(muted)")
+            #endif
+            return true
 
         case "Client.OnNameChanged":
             guard let clientId = params["id"] as? String,
                   let configDict = params["config"] as? [String: Any],
-                  let name = configDict["name"] as? String else {
+                  let name = configDict["name"] as? String,
+                  let indices = status.clientIndices(for: clientId) else {
                 return false
             }
-            for groupIndex in status.groups.indices {
-                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
-                    status.groups[groupIndex].clients[clientIndex].config.name = name
-                    serverStatus = status
-                    return true
-                }
-            }
-            return false
+            status.groups[indices.groupIndex].clients[indices.clientIndex].config.name = name
+            serverStatus = status
+            return true
 
         case "Client.OnLatencyChanged":
             guard let clientId = params["id"] as? String,
                   let configDict = params["config"] as? [String: Any],
-                  let latency = configDict["latency"] as? Int else {
+                  let latency = configDict["latency"] as? Int,
+                  let indices = status.clientIndices(for: clientId) else {
                 return false
             }
-            for groupIndex in status.groups.indices {
-                if let clientIndex = status.groups[groupIndex].clients.firstIndex(where: { $0.id == clientId }) {
-                    status.groups[groupIndex].clients[clientIndex].config.latency = latency
-                    serverStatus = status
-                    return true
-                }
-            }
-            return false
+            status.groups[indices.groupIndex].clients[indices.clientIndex].config.latency = latency
+            serverStatus = status
+            return true
 
         case "Client.OnConnect", "Client.OnDisconnect":
             // These require full refresh since client list changes

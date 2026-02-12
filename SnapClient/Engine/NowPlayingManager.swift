@@ -50,11 +50,6 @@ final class NowPlayingManager: ObservableObject {
     nonisolated(unsafe) private var toggleCommandTarget: Any?
 
 
-    /// Our unique client ID - uses the shared static property from SnapClientEngine
-    private var myClientId: String {
-        SnapClientEngine.uniqueClientId
-    }
-
     // MARK: - Lifecycle
 
     init() {
@@ -102,7 +97,7 @@ final class NowPlayingManager: ObservableObject {
         updateNowPlayingInfo()
 
         #if DEBUG
-        print("[NowPlaying] Configured with engine and RPC client, clientId=\(myClientId)")
+        print("[NowPlaying] Configured with engine and RPC client, clientId=\(SnapClientEngine.uniqueClientId)")
         #endif
     }
 
@@ -309,12 +304,12 @@ final class NowPlayingManager: ObservableObject {
 
         // Find our client by matching our unique client ID
         let ourClient = status.allClients.first { client in
-            client.id == myClientId
+            client.id == SnapClientEngine.uniqueClientId
         }
 
         guard let client = ourClient else {
             #if DEBUG
-            print("[NowPlaying] Client not found for ID: \(myClientId)")
+            print("[NowPlaying] Client not found for ID: \(SnapClientEngine.uniqueClientId)")
             #endif
             return nil
         }
@@ -394,23 +389,19 @@ final class NowPlayingManager: ObservableObject {
 
     /// Load artwork from URL (fallback when embedded not available)
     private func loadArtwork(from urlString: String) {
-        // Convert HTTP to HTTPS to comply with App Transport Security
-        // coverartarchive.org and most artwork servers support HTTPS
-        let secureUrlString = urlString.hasPrefix("http://")
-            ? urlString.replacingOccurrences(of: "http://", with: "https://")
-            : urlString
+        // Convert HTTP to HTTPS using shared utility
+        guard let url = URL.secureURL(from: urlString) else { return }
+        let cacheKey = url.absoluteString
 
-        // Check cache first (use original URL as key for consistency)
-        if let cached = artworkCache[secureUrlString] {
+        // Check cache first
+        if let cached = artworkCache[cacheKey] {
             updateArtwork(cached)
             return
         }
 
         // Don't reload if already loading this URL
-        guard secureUrlString != currentArtworkURL else { return }
-        currentArtworkURL = secureUrlString
-
-        guard let url = URL(string: secureUrlString) else { return }
+        guard cacheKey != currentArtworkURL else { return }
+        currentArtworkURL = cacheKey
 
         Task {
             do {
@@ -445,21 +436,21 @@ final class NowPlayingManager: ObservableObject {
                 guard let preparedImage else { return }
 
                 // Now on MainActor, the image is fully decoded and ready
-                await MainActor.run { [secureUrlString] in
+                await MainActor.run { [cacheKey] in
                     // Capture prepared image - it's already decompressed
                     let capturedImage = preparedImage
                     let artwork = MPMediaItemArtwork(boundsSize: capturedImage.size) { _ in capturedImage }
 
                     // Cache it with FIFO eviction
-                    cacheArtwork(artwork, for: secureUrlString)
+                    cacheArtwork(artwork, for: cacheKey)
 
                     // Update if still current
-                    if currentArtworkURL == secureUrlString {
+                    if currentArtworkURL == cacheKey {
                         updateArtwork(artwork)
                     }
 
                     #if DEBUG
-                    print("[NowPlaying] Artwork loaded from \(secureUrlString)")
+                    print("[NowPlaying] Artwork loaded from \(cacheKey)")
                     #endif
                 }
             } catch {

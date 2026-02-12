@@ -1,5 +1,22 @@
 import Foundation
 
+// MARK: - URL Utilities
+
+extension URL {
+    /// Create a URL from a string, converting HTTP to HTTPS for App Transport Security compliance.
+    ///
+    /// Most artwork servers (coverartarchive.org, etc.) support HTTPS, so this allows
+    /// seamless loading without ATS exceptions.
+    static func secureURL(from string: String) -> URL? {
+        let secure = string.hasPrefix("http://")
+            ? string.replacingOccurrences(of: "http://", with: "https://")
+            : string
+        return URL(string: secure)
+    }
+}
+
+// MARK: - SavedServer
+
 /// A manually saved Snapcast server.
 struct SavedServer: Identifiable, Codable, Hashable {
     let id: UUID
