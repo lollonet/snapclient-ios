@@ -408,9 +408,24 @@ final class SnapClientEngine: ObservableObject {
                 return
             }
 
-            // Update state on main thread
+            // Update state on main thread - but ONLY if we're still the active connection
+            // This prevents a race where a server switch causes the old task to
+            // overwrite connectedHost/Port with stale values.
             await MainActor.run { [weak self] in
                 guard let self else { return }
+
+                // Check we're still the owner before updating state.
+                // Only exact match counts - if target is nil or different, someone else
+                // took over and we should discard our result.
+                guard self.activeConnectionTarget == targetForCleanup else {
+                    log.info("[\(instanceId)] connection completed but target changed to \(self.activeConnectionTarget ?? "nil"), discarding result")
+                    // Stop the connection we just made since it's no longer wanted
+                    if success {
+                        snapclient_stop(ref)
+                    }
+                    return
+                }
+
                 if success {
                     log.info("[\(instanceId)] snapclient_start succeeded for \(hostCopy):\(portCopy)")
                     self.connectedHost = hostCopy
@@ -419,10 +434,11 @@ final class SnapClientEngine: ObservableObject {
                 } else {
                     log.error("[\(instanceId)] snapclient_start FAILED for \(hostCopy):\(portCopy) - C++ client returned false")
                 }
-            }
 
-            // Cleanup after successful completion
-            await cleanupIfStillOwner()
+                // Cleanup ownership tracking
+                self.activeConnectionTarget = nil
+                self.isConnecting = false
+            }
         }
     }
 

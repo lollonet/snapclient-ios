@@ -1,0 +1,20 @@
+--- a/client/controller.cpp
++++ b/client/controller.cpp
+@@ -84,6 +84,8 @@ using namespace player;
+
+ static constexpr auto LOG_TAG = "Controller";
+ static constexpr auto TIME_SYNC_INTERVAL = 1s;
++// Longer timeout for iOS where TCP can be throttled when app is backgrounded
++static constexpr auto TIME_SYNC_TIMEOUT = 10s;
+
+ Controller::Controller(boost::asio::io_context& io_context, const ClientSettings& settings)
+     : io_context_(io_context),
+@@ -337,7 +339,7 @@ void Controller::browseForServers()
+ void Controller::sendTimeSyncMessage(int quick_syncs)
+ {
+     auto timeReq = std::make_shared<msg::Time>();
+-    clientConnection_->sendRequest<msg::Time>(timeReq, 2s,
++    clientConnection_->sendRequest<msg::Time>(timeReq, TIME_SYNC_TIMEOUT,
+                                               [this, quick_syncs](const boost::system::error_code& ec, const std::unique_ptr<msg::Time>& response) mutable
+     {
+         if (ec)
