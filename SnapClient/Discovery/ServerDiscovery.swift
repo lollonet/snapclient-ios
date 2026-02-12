@@ -6,7 +6,8 @@ import Combine
 struct DiscoveredServer: Identifiable, Hashable {
     let id: String          // mDNS service name
     let name: String        // Human-readable name
-    let host: String        // Resolved hostname or IP
+    let host: String        // Resolved IP address or hostname
+    let hostname: String?   // Resolved hostname (from reverse DNS if host is IP)
     let port: Int           // Audio port (typically 1704)
     let txtRecord: [String: String]
 
@@ -128,15 +129,18 @@ final class ServerDiscovery: ObservableObject {
                         // Extract clean IP/hostname string without interface suffix
                         // NWEndpoint.Host can include "%interface" suffix which breaks DNS
                         let hostString: String
+                        var resolvedHostname: String? = nil
+
                         switch host {
                         case .ipv4(let addr):
                             // Convert raw bytes to dotted decimal string
-                            // Must convert Data to [UInt8] for correct subscripting
                             let bytes = [UInt8](addr.rawValue)
                             hostString = String(format: "%d.%d.%d.%d",
                                 bytes[0], bytes[1], bytes[2], bytes[3])
+                            // Try reverse DNS lookup for hostname
+                            resolvedHostname = Self.reverseDNS(ip: hostString)
                             #if DEBUG
-                            print("[Discovery] IPv4: \(hostString)")
+                            print("[Discovery] IPv4: \(hostString) -> \(resolvedHostname ?? "no hostname")")
                             #endif
                         case .ipv6(let addr):
                             // For IPv6, use description but strip %interface suffix
@@ -146,11 +150,14 @@ final class ServerDiscovery: ObservableObject {
                             } else {
                                 hostString = raw
                             }
+                            // Try reverse DNS lookup for hostname
+                            resolvedHostname = Self.reverseDNS(ip: hostString)
                             #if DEBUG
-                            print("[Discovery] IPv6: \(hostString)")
+                            print("[Discovery] IPv6: \(hostString) -> \(resolvedHostname ?? "no hostname")")
                             #endif
                         case .name(let hostname, _):
                             hostString = hostname
+                            resolvedHostname = hostname  // Already have hostname
                             #if DEBUG
                             print("[Discovery] Name: \(hostname)")
                             #endif
@@ -170,6 +177,7 @@ final class ServerDiscovery: ObservableObject {
                             id: serviceId,
                             name: name,
                             host: hostString,
+                            hostname: resolvedHostname,
                             port: Int(port.rawValue),
                             txtRecord: txt
                         )
@@ -207,5 +215,39 @@ final class ServerDiscovery: ObservableObject {
         } else {
             servers.append(server)
         }
+    }
+
+    /// Perform reverse DNS lookup to get hostname from IP address.
+    /// Returns nil if lookup fails or times out.
+    private nonisolated static func reverseDNS(ip: String) -> String? {
+        var hints = addrinfo()
+        hints.ai_flags = AI_NUMERICHOST
+        hints.ai_family = AF_UNSPEC
+
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(ip, nil, &hints, &res) == 0, let addrInfo = res else {
+            return nil
+        }
+        defer { freeaddrinfo(res) }
+
+        var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let result = getnameinfo(
+            addrInfo.pointee.ai_addr,
+            addrInfo.pointee.ai_addrlen,
+            &hostname,
+            socklen_t(hostname.count),
+            nil,
+            0,
+            NI_NAMEREQD  // Require hostname, fail if not found
+        )
+
+        guard result == 0 else {
+            return nil
+        }
+
+        let name = String(cString: hostname)
+        // Don't return if it's just the IP echoed back
+        if name == ip { return nil }
+        return name
     }
 }

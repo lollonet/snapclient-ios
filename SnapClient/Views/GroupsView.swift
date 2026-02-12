@@ -78,6 +78,18 @@ struct GroupSection: View {
         return total / connectedClients.count
     }
 
+    /// Clients sorted: connected first, then alphabetically by name
+    private var sortedClients: [SnapcastClient] {
+        group.clients.sorted { a, b in
+            if a.connected != b.connected {
+                return a.connected  // Connected clients first
+            }
+            let nameA = a.config.name.isEmpty ? (a.host?.name ?? a.id) : a.config.name
+            let nameB = b.config.name.isEmpty ? (b.host?.name ?? b.id) : b.config.name
+            return nameA.localizedCaseInsensitiveCompare(nameB) == .orderedAscending
+        }
+    }
+
     var body: some View {
         Section {
             // Master volume (only when expanded)
@@ -102,8 +114,8 @@ struct GroupSection: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            // Client rows
-            ForEach(group.clients) { client in
+            // Client rows (sorted)
+            ForEach(sortedClients) { client in
                 ClientRow(client: client, groupId: group.id, editItem: $editItem)
             }
         } header: {
@@ -133,6 +145,7 @@ struct GroupSection: View {
                         .foregroundStyle(showMasterVolume ? Color.accentColor : .secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(showMasterVolume ? "Hide master volume" : "Show master volume")
 
                 // Group mute
                 Button {
@@ -149,6 +162,7 @@ struct GroupSection: View {
                         .foregroundStyle(group.muted ? .red : .secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(group.muted ? "Unmute group" : "Mute group")
             }
         }
         .onAppear {
@@ -186,7 +200,7 @@ struct GroupSection: View {
     }
 }
 
-/// Compact row showing a single client with inline volume slider.
+/// Compact row showing a single client with full-width volume slider.
 struct ClientRow: View {
     let client: SnapcastClient
     let groupId: String
@@ -202,24 +216,39 @@ struct ClientRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            // Status + Name (tappable for edit)
-            Button {
-                editItem = .client(client, groupId: groupId)
-            } label: {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(client.connected ? .green : .red)
-                        .frame(width: 8, height: 8)
-                    Text(displayName)
-                        .font(.subheadline)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 6) {
+            // Top row: Status indicator + Name + Mute button
+            HStack(spacing: 8) {
+                // Status + Name (tappable for edit)
+                Button {
+                    editItem = .client(client, groupId: groupId)
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(client.connected ? .green : .red)
+                            .frame(width: 8, height: 8)
+                        Text(displayName)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                    }
                 }
-            }
-            .foregroundStyle(.primary)
-            .frame(minWidth: 80, alignment: .leading)
+                .foregroundStyle(.primary)
 
-            // Volume slider (takes remaining space)
+                Spacer()
+
+                // Mute button
+                Button {
+                    toggleMute()
+                } label: {
+                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(isMuted ? .red : .secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isMuted ? "Unmute \(displayName)" : "Mute \(displayName)")
+            }
+
+            // Bottom row: Full-width volume slider
             SnapVolumeSlider(
                 serverValue: client.config.volume.percent,
                 isMuted: isMuted,
@@ -234,16 +263,6 @@ struct ClientRow: View {
                     rpcClient.handleError(error)
                 }
             )
-
-            // Mute button only
-            Button {
-                toggleMute()
-            } label: {
-                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .foregroundStyle(isMuted ? .red : .secondary)
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
         }
         .padding(.vertical, 4)
         .opacity(isMuted ? 0.5 : 1.0)
