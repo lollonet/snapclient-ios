@@ -145,6 +145,7 @@ struct GroupSection: View {
                         .foregroundStyle(showMasterVolume ? Color.accentColor : .secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(showMasterVolume ? "Hide master volume" : "Show master volume")
 
                 // Group mute
                 Button {
@@ -161,6 +162,7 @@ struct GroupSection: View {
                         .foregroundStyle(group.muted ? .red : .secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(group.muted ? "Unmute group" : "Mute group")
             }
         }
         .onAppear {
@@ -243,6 +245,7 @@ struct ClientRow: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isMuted ? "Unmute \(displayName)" : "Mute \(displayName)")
             }
 
             // Bottom row: Full-width volume slider

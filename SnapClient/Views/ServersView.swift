@@ -11,6 +11,7 @@ struct ServersView: View {
     @State private var editingServer: SavedServer?
     @State private var isTestingConnection = false
     @State private var connectionTestResult: Bool?
+    @State private var clearResultTask: Task<Void, Never>?
 
     /// Discovered servers sorted: connected first, then alphabetically
     private var sortedDiscoveredServers: [DiscoveredServer] {
@@ -199,15 +200,19 @@ struct ServersView: View {
     private func testConnection(host: String, port: Int) {
         isTestingConnection = true
         connectionTestResult = nil
+        clearResultTask?.cancel()
 
         Task {
             let result = await engine.testTCP(host: host, port: port)
             isTestingConnection = false
             connectionTestResult = (result == 0)
 
-            // Clear result after 3 seconds
-            try? await Task.sleep(for: .seconds(3))
-            connectionTestResult = nil
+            // Clear result after 3 seconds (cancellable)
+            clearResultTask = Task {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                connectionTestResult = nil
+            }
         }
     }
 }
