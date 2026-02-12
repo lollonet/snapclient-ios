@@ -9,6 +9,32 @@ struct ServersView: View {
 
     @State private var showAddSheet = false
     @State private var editingServer: SavedServer?
+    @State private var isTestingConnection = false
+    @State private var connectionTestResult: Bool?
+
+    /// Discovered servers sorted: connected first, then alphabetically
+    private var sortedDiscoveredServers: [DiscoveredServer] {
+        discovery.servers.sorted { a, b in
+            let aConnected = engine.connectedHost == a.host
+            let bConnected = engine.connectedHost == b.host
+            if aConnected != bConnected {
+                return aConnected  // Connected server first
+            }
+            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+        }
+    }
+
+    /// Saved servers sorted: connected first, then alphabetically
+    private var sortedSavedServers: [SavedServer] {
+        savedServers.servers.sorted { a, b in
+            let aConnected = engine.connectedHost == a.host
+            let bConnected = engine.connectedHost == b.host
+            if aConnected != bConnected {
+                return aConnected  // Connected server first
+            }
+            return a.displayName.localizedCaseInsensitiveCompare(b.displayName) == .orderedAscending
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -27,7 +53,7 @@ struct ServersView: View {
                         }
                         .foregroundStyle(.secondary)
                     } else {
-                        ForEach(discovery.servers) { server in
+                        ForEach(sortedDiscoveredServers) { server in
                             Button {
                                 connectTo(host: server.host, port: server.port)
                             } label: {
@@ -35,6 +61,7 @@ struct ServersView: View {
                                     name: server.displayName,
                                     host: server.host,
                                     port: server.port,
+                                    fqdn: server.name,
                                     isConnected: engine.connectedHost == server.host
                                 )
                             }
@@ -47,7 +74,7 @@ struct ServersView: View {
                 // Saved servers (manually added)
                 if !savedServers.servers.isEmpty {
                     Section {
-                        ForEach(savedServers.servers) { server in
+                        ForEach(sortedSavedServers) { server in
                             Button {
                                 connectTo(host: server.host, port: server.port)
                             } label: {
@@ -55,6 +82,7 @@ struct ServersView: View {
                                     name: server.displayName,
                                     host: server.host,
                                     port: server.port,
+                                    fqdn: nil,
                                     isConnected: engine.connectedHost == server.host
                                 )
                             }
@@ -88,27 +116,62 @@ struct ServersView: View {
                     }
                 }
 
-                // Info
-                Section("About") {
-                    LabeledContent("Core Version", value: engine.coreVersion)
-                    LabeledContent("Protocol Version", value: "\(engine.protocolVersion)")
-                    LabeledContent("State", value: engine.state.displayName)
-                }
-
-                // Debug
-                Section("Debug") {
-                    Button("Clear Last Server") {
-                        engine.lastServer = nil
-                        #if DEBUG
-                        print("Cleared lastServer")
-                        #endif
-                    }
-
-                    if !engine.bridgeLogs.isEmpty {
-                        NavigationLink("View Bridge Logs (\(engine.bridgeLogs.count))") {
-                            BridgeLogsView(logs: engine.bridgeLogs)
+                // Diagnostics
+                Section("Diagnostics") {
+                    // Discovery status
+                    HStack {
+                        Label("Network Discovery", systemImage: "antenna.radiowaves.left.and.right")
+                        Spacer()
+                        if discovery.isSearching {
+                            Text("Active")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text("Idle")
+                                .foregroundStyle(.secondary)
                         }
                     }
+
+                    LabeledContent("Servers Found", value: "\(discovery.servers.count)")
+
+                    // Connection test (only when connected)
+                    if let host = engine.connectedHost, let port = engine.connectedPort {
+                        Button {
+                            testConnection(host: host, port: port)
+                        } label: {
+                            HStack {
+                                Label("Test Connection", systemImage: "network")
+                                Spacer()
+                                if isTestingConnection {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                } else if let result = connectionTestResult {
+                                    Image(systemName: result ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                        .foregroundStyle(result ? .green : .red)
+                                }
+                            }
+                        }
+                        .disabled(isTestingConnection)
+                    }
+
+                    // Bridge logs
+                    if !engine.bridgeLogs.isEmpty {
+                        NavigationLink {
+                            BridgeLogsView(logs: engine.bridgeLogs)
+                        } label: {
+                            HStack {
+                                Label("Bridge Logs", systemImage: "doc.text")
+                                Spacer()
+                                Text("\(engine.bridgeLogs.count)")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                // Version info (collapsed)
+                Section("Version") {
+                    LabeledContent("Core", value: engine.coreVersion)
+                    LabeledContent("Protocol", value: "\(engine.protocolVersion)")
                 }
             }
             .navigationTitle("Servers")
@@ -132,6 +195,21 @@ struct ServersView: View {
         // RPC control port is audio port + 76 (standard: 1704 -> 1780)
         rpcClient.connect(host: host, port: port + 76)
     }
+
+    private func testConnection(host: String, port: Int) {
+        isTestingConnection = true
+        connectionTestResult = nil
+
+        Task {
+            let result = await engine.testTCP(host: host, port: port)
+            isTestingConnection = false
+            connectionTestResult = (result == 0)
+
+            // Clear result after 3 seconds
+            try? await Task.sleep(for: .seconds(3))
+            connectionTestResult = nil
+        }
+    }
 }
 
 /// Reusable row for displaying a server.
@@ -139,22 +217,32 @@ private struct ServerRow: View {
     let name: String
     let host: String
     let port: Int
+    let fqdn: String?
     let isConnected: Bool
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading) {
-                Text(name)
-                    .font(.body)
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(name)
+                        .font(.body)
+                    if isConnected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+                // Show FQDN if different from name and host
+                if let fqdn, !fqdn.isEmpty, fqdn != name, fqdn != host {
+                    Text(fqdn)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Text("\(host):\(port)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
             }
-            Spacer()
-            if isConnected {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            }
+            Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
     }

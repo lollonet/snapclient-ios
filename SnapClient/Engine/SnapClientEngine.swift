@@ -208,6 +208,9 @@ final class SnapClientEngine: ObservableObject {
         if let observer = foregroundObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = backgroundObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
 
         // Unregister instance-specific log callback (not global, to avoid multi-instance conflicts)
         if let ref = clientRef {
