@@ -5,6 +5,15 @@ import XCTest
 /// These tests verify that stale tasks don't interfere with new connections.
 final class ServerSwitchRaceTests: XCTestCase {
 
+    // Non-routable test IPs that will fail to connect but test switching logic
+    private static let testServers = [
+        ("10.255.255.1", 1780, 1704),
+        ("10.255.255.2", 1780, 1704),
+        ("10.255.255.3", 1780, 1704),
+        ("10.255.255.4", 1780, 1704),
+        ("10.255.255.5", 1780, 1704)
+    ]
+
     // MARK: - RPC Client Server Switching Tests
 
     /// Tests that rapid server switching in RPC client doesn't crash.
@@ -15,20 +24,11 @@ final class ServerSwitchRaceTests: XCTestCase {
     func testRPCClientRapidServerSwitch() async throws {
         let rpcClient = SnapcastRPCClient()
 
-        // Dummy servers (non-routable, will fail to connect but tests the switching logic)
-        let servers = [
-            ("10.255.255.1", 1780),
-            ("10.255.255.2", 1780),
-            ("10.255.255.3", 1780),
-            ("10.255.255.4", 1780),
-            ("10.255.255.5", 1780)
-        ]
-
         print("🧪 [RPCSwitch] Testing rapid RPC client server switching")
 
         let switchCount = 50
         for i in 1...switchCount {
-            let server = servers[i % servers.count]
+            let server = Self.testServers[i % Self.testServers.count]
 
             // Rapid switch - connect to new server immediately
             rpcClient.connect(host: server.0, port: server.1)
@@ -143,16 +143,10 @@ final class ServerSwitchRaceTests: XCTestCase {
 
         print("🧪 [EngineRapidSwitch] Testing rapid engine switches with ownership checks")
 
-        let servers = [
-            "10.255.255.1",
-            "10.255.255.2",
-            "10.255.255.3"
-        ]
-
         // Rapid switching
         for i in 1...30 {
-            let server = servers[i % servers.count]
-            engine.start(host: server, port: 1704)
+            let server = Self.testServers[i % Self.testServers.count]
+            engine.start(host: server.0, port: server.2)
 
             // Very short delay
             try await Task.sleep(nanoseconds: 20_000_000) // 20ms
@@ -195,19 +189,13 @@ final class ServerSwitchRaceTests: XCTestCase {
 
         print("🧪 [CombinedSwitch] Testing combined engine + RPC server switching")
 
-        let servers = [
-            ("10.255.255.1", 1704, 1780),
-            ("10.255.255.2", 1704, 1780),
-            ("10.255.255.3", 1704, 1780)
-        ]
-
         for i in 1...20 {
-            let server = servers[i % servers.count]
+            let server = Self.testServers[i % Self.testServers.count]
 
             // This is the pattern from ServersView.connectTo()
             rpcClient.disconnect()
-            engine.start(host: server.0, port: server.1)
-            rpcClient.connect(host: server.0, port: server.2)
+            engine.start(host: server.0, port: server.2)
+            rpcClient.connect(host: server.0, port: server.1)
 
             try await Task.sleep(nanoseconds: 50_000_000) // 50ms
 
