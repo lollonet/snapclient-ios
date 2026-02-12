@@ -230,6 +230,13 @@ apply_ios_patches() {
         cd "$ROOT_DIR"
     fi
 
+    if [ -f "$patch_dir/ios-time-sync-timeout.patch" ]; then
+        info "Applying iOS time sync timeout patch..."
+        cd "$dest"
+        patch -p1 -N < "$patch_dir/ios-time-sync-timeout.patch" || true
+        cd "$ROOT_DIR"
+    fi
+
     if [ -f "$patch_dir/ios-time-provider-reset.patch" ]; then
         info "Applying iOS time provider reset patch..."
         cd "$dest"
