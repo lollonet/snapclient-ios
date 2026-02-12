@@ -445,11 +445,22 @@ final class SnapcastRPCClient: ObservableObject {
         return result
     }
 
+    /// Verifies that the given WebSocket is still the active instance.
+    /// Returns true if the websocket is still current, false if it's stale.
+    private func isActiveWebSocket(_ websocket: URLSessionWebSocketTask) async -> Bool {
+        return await MainActor.run { self.webSocket === websocket }
+    }
+
     private func startReceiving() {
         // CRITICAL: Capture the websocket instance this task monitors.
         // This prevents a race condition where a server switch causes
         // the old task's error handler to tear down the NEW connection.
-        guard let currentWebSocket = webSocket else { return }
+        guard let currentWebSocket = webSocket else {
+            #if DEBUG
+            print("[RPC] startReceiving: webSocket is nil, cannot start")
+            #endif
+            return
+        }
 
         receiveTask = Task { [weak self, currentWebSocket] in
             guard let self else { return }
@@ -459,7 +470,7 @@ final class SnapcastRPCClient: ObservableObject {
             while !Task.isCancelled {
                 do {
                     // Check that our websocket is still the active one
-                    guard await MainActor.run(body: { self.webSocket === currentWebSocket }) else {
+                    guard await isActiveWebSocket(currentWebSocket) else {
                         #if DEBUG
                         print("[RPC] webSocket changed, exiting stale receive loop")
                         #endif
@@ -467,8 +478,6 @@ final class SnapcastRPCClient: ObservableObject {
                     }
                     let message = try await currentWebSocket.receive()
                     await MainActor.run {
-                        // Double-check we're still current before handling
-                        guard self.webSocket === currentWebSocket else { return }
                         self.handleMessage(message)
                     }
                 } catch {
@@ -476,14 +485,14 @@ final class SnapcastRPCClient: ObservableObject {
                     print("[RPC] receive error: \(error)")
                     #endif
                     // Only handle disconnect if this is still the active websocket
-                    await MainActor.run {
-                        if self.webSocket === currentWebSocket {
+                    if await isActiveWebSocket(currentWebSocket) {
+                        await MainActor.run {
                             self.handleDisconnect()
-                        } else {
-                            #if DEBUG
-                            print("[RPC] skipping handleDisconnect for stale websocket")
-                            #endif
                         }
+                    } else {
+                        #if DEBUG
+                        print("[RPC] skipping handleDisconnect for stale websocket")
+                        #endif
                     }
                     break
                 }
@@ -497,7 +506,12 @@ final class SnapcastRPCClient: ObservableObject {
     private func startPinging() {
         // CRITICAL: Capture the websocket instance this task monitors.
         // Prevents stale ping tasks from interfering with new connections.
-        guard let currentWebSocket = webSocket else { return }
+        guard let currentWebSocket = webSocket else {
+            #if DEBUG
+            print("[RPC] startPinging: webSocket is nil, cannot start")
+            #endif
+            return
+        }
 
         pingTask = Task { [weak self, currentWebSocket] in
             while !Task.isCancelled {
@@ -507,7 +521,7 @@ final class SnapcastRPCClient: ObservableObject {
                 guard let self else { break }
 
                 // Check that our websocket is still the active one
-                guard await MainActor.run(body: { self.webSocket === currentWebSocket }) else {
+                guard await isActiveWebSocket(currentWebSocket) else {
                     #if DEBUG
                     print("[RPC] webSocket changed, exiting stale ping loop")
                     #endif
@@ -532,10 +546,14 @@ final class SnapcastRPCClient: ObservableObject {
                     print("[RPC] ping failed: \(error)")
                     #endif
                     // Only handle disconnect if this is still the active websocket
-                    await MainActor.run {
-                        if self.webSocket === currentWebSocket {
+                    if await isActiveWebSocket(currentWebSocket) {
+                        await MainActor.run {
                             self.handleDisconnect()
                         }
+                    } else {
+                        #if DEBUG
+                        print("[RPC] skipping handleDisconnect for stale ping websocket")
+                        #endif
                     }
                     break
                 }
