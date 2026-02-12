@@ -446,29 +446,44 @@ final class SnapcastRPCClient: ObservableObject {
     }
 
     private func startReceiving() {
-        receiveTask = Task { [weak self] in
+        // CRITICAL: Capture the websocket instance this task monitors.
+        // This prevents a race condition where a server switch causes
+        // the old task's error handler to tear down the NEW connection.
+        guard let currentWebSocket = webSocket else { return }
+
+        receiveTask = Task { [weak self, currentWebSocket] in
             guard let self else { return }
             #if DEBUG
             print("[RPC] startReceiving loop started")
             #endif
             while !Task.isCancelled {
                 do {
-                    guard let webSocket = await MainActor.run(body: { self.webSocket }) else {
+                    // Check that our websocket is still the active one
+                    guard await MainActor.run(body: { self.webSocket === currentWebSocket }) else {
                         #if DEBUG
-                        print("[RPC] webSocket is nil, exiting receive loop")
+                        print("[RPC] webSocket changed, exiting stale receive loop")
                         #endif
                         break
                     }
-                    let message = try await webSocket.receive()
+                    let message = try await currentWebSocket.receive()
                     await MainActor.run {
+                        // Double-check we're still current before handling
+                        guard self.webSocket === currentWebSocket else { return }
                         self.handleMessage(message)
                     }
                 } catch {
                     #if DEBUG
                     print("[RPC] receive error: \(error)")
                     #endif
+                    // Only handle disconnect if this is still the active websocket
                     await MainActor.run {
-                        self.handleDisconnect()
+                        if self.webSocket === currentWebSocket {
+                            self.handleDisconnect()
+                        } else {
+                            #if DEBUG
+                            print("[RPC] skipping handleDisconnect for stale websocket")
+                            #endif
+                        }
                     }
                     break
                 }
@@ -480,19 +495,28 @@ final class SnapcastRPCClient: ObservableObject {
     }
 
     private func startPinging() {
-        pingTask = Task { [weak self] in
+        // CRITICAL: Capture the websocket instance this task monitors.
+        // Prevents stale ping tasks from interfering with new connections.
+        guard let currentWebSocket = webSocket else { return }
+
+        pingTask = Task { [weak self, currentWebSocket] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(self?.pingInterval ?? 30))
                 guard !Task.isCancelled else { break }
 
-                guard let self,
-                      let webSocket = await MainActor.run(body: { self.webSocket }) else {
+                guard let self else { break }
+
+                // Check that our websocket is still the active one
+                guard await MainActor.run(body: { self.webSocket === currentWebSocket }) else {
+                    #if DEBUG
+                    print("[RPC] webSocket changed, exiting stale ping loop")
+                    #endif
                     break
                 }
 
                 do {
                     try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                        webSocket.sendPing { error in
+                        currentWebSocket.sendPing { error in
                             if let error {
                                 cont.resume(throwing: error)
                             } else {
@@ -507,8 +531,11 @@ final class SnapcastRPCClient: ObservableObject {
                     #if DEBUG
                     print("[RPC] ping failed: \(error)")
                     #endif
+                    // Only handle disconnect if this is still the active websocket
                     await MainActor.run {
-                        self.handleDisconnect()
+                        if self.webSocket === currentWebSocket {
+                            self.handleDisconnect()
+                        }
                     }
                     break
                 }
