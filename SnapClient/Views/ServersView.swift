@@ -179,6 +179,9 @@ struct ServersView: View {
             .onAppear {
                 discovery.startBrowsing()
             }
+            .onDisappear {
+                clearResultTask?.cancel()
+            }
             .sheet(isPresented: $showAddSheet) {
                 AddServerSheet()
             }
