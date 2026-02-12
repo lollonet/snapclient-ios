@@ -415,13 +415,9 @@ final class SnapClientEngine: ObservableObject {
                 guard let self else { return }
 
                 // Check we're still the owner before updating state.
-                // stillOwner is true if:
-                // 1. We're still the current target (exact match), OR
-                // 2. Target is nil (no one else claimed ownership - happens when
-                //    previous task completed and cleared target before we got here)
-                let stillOwner = self.activeConnectionTarget == targetForCleanup ||
-                                 self.activeConnectionTarget == nil
-                guard stillOwner else {
+                // Only exact match counts - if target is nil or different, someone else
+                // took over and we should discard our result.
+                guard self.activeConnectionTarget == targetForCleanup else {
                     log.info("[\(instanceId)] connection completed but target changed to \(self.activeConnectionTarget ?? "nil"), discarding result")
                     // Stop the connection we just made since it's no longer wanted
                     if success {

@@ -451,6 +451,20 @@ final class SnapcastRPCClient: ObservableObject {
         return await MainActor.run { self.webSocket === websocket }
     }
 
+    /// Handle disconnect only if the given websocket is still the active one.
+    /// Returns true if disconnect was handled, false if websocket was stale.
+    private func handleDisconnectIfActive(_ websocket: URLSessionWebSocketTask, context: String) async -> Bool {
+        if await isActiveWebSocket(websocket) {
+            await MainActor.run { self.handleDisconnect() }
+            return true
+        } else {
+            #if DEBUG
+            print("[RPC] skipping handleDisconnect for stale \(context) websocket")
+            #endif
+            return false
+        }
+    }
+
     private func startReceiving() {
         // CRITICAL: Capture the websocket instance this task monitors.
         // This prevents a race condition where a server switch causes
@@ -484,16 +498,7 @@ final class SnapcastRPCClient: ObservableObject {
                     #if DEBUG
                     print("[RPC] receive error: \(error)")
                     #endif
-                    // Only handle disconnect if this is still the active websocket
-                    if await isActiveWebSocket(currentWebSocket) {
-                        await MainActor.run {
-                            self.handleDisconnect()
-                        }
-                    } else {
-                        #if DEBUG
-                        print("[RPC] skipping handleDisconnect for stale websocket")
-                        #endif
-                    }
+                    _ = await handleDisconnectIfActive(currentWebSocket, context: "receive")
                     break
                 }
             }
@@ -545,16 +550,7 @@ final class SnapcastRPCClient: ObservableObject {
                     #if DEBUG
                     print("[RPC] ping failed: \(error)")
                     #endif
-                    // Only handle disconnect if this is still the active websocket
-                    if await isActiveWebSocket(currentWebSocket) {
-                        await MainActor.run {
-                            self.handleDisconnect()
-                        }
-                    } else {
-                        #if DEBUG
-                        print("[RPC] skipping handleDisconnect for stale ping websocket")
-                        #endif
-                    }
+                    _ = await handleDisconnectIfActive(currentWebSocket, context: "ping")
                     break
                 }
             }
